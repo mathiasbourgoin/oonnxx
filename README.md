@@ -17,6 +17,8 @@ At run time, supply ONNX Runtime 1.23.2's `libonnxruntime.so` on the linker path
 
 The model and runtime binaries are supplied separately; opam does not download them. Check the asset hashes because the URLs follow a movable branch. `Oonnxx.open_model` raises an exception if it cannot load the model, tokenizer, or runtime.
 
+By default ONNX Runtime sizes its thread pool to the machine and its threads spin while waiting, so a single embedding call can occupy every core. Use `Oonnxx.open_model_with ~threads:1 ~model ~tokenizer ()` to run each inference on the calling thread, or another positive count to bound the pool; it sets both the intra-op and inter-op thread counts. Combine `~threads:1` with `Oonnxx_eio.embed_passages` to choose the parallelism with `max_fibers` instead.
+
 ## Index passages and search
 
 Add `oonnxx`, `oonnxx.sqlite3`, and `sqlite3` to the application's Dune dependencies. This example opens a writable SQLite database and assumes the model files are at the paths shown:

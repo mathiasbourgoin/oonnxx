@@ -10,5 +10,14 @@ let () =
             ~domain_mgr:(Eio.Stdenv.domain_mgr env) ~max_fibers:2 engine texts) in
       List.iter2 (fun a b ->
         if Oonnxx.cosine a b < 0.99999 then failwith "parallel embedding differs")
-        serial parallel
+        serial parallel;
+      let single = Oonnxx.open_model_with ~threads:1 ~model ~tokenizer () in
+      let parallel_single =
+        Eio_main.run (fun env ->
+          Oonnxx_eio.embed_passages
+            ~domain_mgr:(Eio.Stdenv.domain_mgr env) ~max_fibers:2 single texts) in
+      List.iter2 (fun a b ->
+        if Oonnxx.cosine a b < 0.99999 then
+          failwith "parallel embedding with threads:1 differs")
+        serial parallel_single
   | _ -> ()

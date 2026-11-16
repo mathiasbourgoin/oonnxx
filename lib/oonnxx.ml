@@ -1,13 +1,20 @@
 type runtime
-external runtime_open : string -> runtime = "oonnxx_ort_open"
+external runtime_open : string -> int -> runtime = "oonnxx_ort_open"
 external runtime_run : runtime -> int array -> float array array = "oonnxx_ort_run"
 
 type t = { runtime : runtime; tokenizer : Tokenizer.t }
 
-let open_model ~model ~tokenizer =
+let open_model_with ?threads ~model ~tokenizer () =
+  let threads =
+    match threads with
+    | None -> 0
+    | Some count when count >= 1 -> count
+    | Some _ -> invalid_arg "Oonnxx.open_model: threads must be positive" in
   let tokenizer = Tokenizer.load tokenizer in
-  let runtime = runtime_open model in
+  let runtime = runtime_open model threads in
   { runtime; tokenizer }
+
+let open_model ~model ~tokenizer = open_model_with ~model ~tokenizer ()
 
 let tokenize t text =
   if String.length text > 16_384 then

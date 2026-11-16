@@ -41,8 +41,9 @@ static void raise_status(const OrtApi *api, OrtStatus *status) {
   }
 }
 
-CAMLprim value oonnxx_ort_open(value path) {
-  CAMLparam1(path);
+/* [threads] = 0 keeps ONNX Runtime's default thread pools. */
+CAMLprim value oonnxx_ort_open(value path, value threads) {
+  CAMLparam2(path, threads);
   CAMLlocal1(result);
   const char *library_path = getenv("ONNXRUNTIME_LIBRARY");
   if (!library_path || !*library_path) library_path = "libonnxruntime.so";
@@ -67,7 +68,14 @@ CAMLprim value oonnxx_ort_open(value path) {
   OrtSessionOptions *options = NULL;
   raise_status(api, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "oonnxx", &s->env));
   raise_status(api, api->CreateSessionOptions(&options));
-  OrtStatus *status = api->CreateSession(s->env, String_val(path), options, &s->session);
+  int thread_count = Int_val(threads);
+  OrtStatus *status = NULL;
+  if (thread_count > 0) {
+    status = api->SetIntraOpNumThreads(options, thread_count);
+    if (!status) status = api->SetInterOpNumThreads(options, thread_count);
+  }
+  if (!status)
+    status = api->CreateSession(s->env, String_val(path), options, &s->session);
   api->ReleaseSessionOptions(options);
   raise_status(api, status);
   CAMLreturn(result);

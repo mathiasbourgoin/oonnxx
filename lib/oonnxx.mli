@@ -6,6 +6,14 @@ val open_model : model:string -> tokenizer:string -> t
 (** Load an ONNX model and a Hugging Face [tokenizer.json] for multilingual E5.
     Raises [Failure] on errors. *)
 
+val open_model_with :
+  ?threads:int -> model:string -> tokenizer:string -> unit -> t
+(** Like [open_model], with ONNX Runtime options. [threads] sets both the
+    intra-op and inter-op thread counts of the session; [threads=1] runs each
+    inference on the calling thread. Without [threads], ONNX Runtime chooses
+    its defaults (an intra-op pool sized to the machine's cores, whose threads
+    spin while waiting). Raises [Invalid_argument] if [threads < 1]. *)
+
 val tokenize : t -> string -> int array
 (** Return model input IDs including the E5 [<s>] and [</s>] tokens.
     Inputs above 16 KiB are rejected; split files into passages first. *)

@@ -1,6 +1,6 @@
 (test
  (name test_oonnxx)
- (libraries oonnxx))
+ (libraries oonnxx unix))
 
 (test
  (name test_caqti)
