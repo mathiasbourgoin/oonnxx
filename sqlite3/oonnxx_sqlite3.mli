@@ -1,0 +1,32 @@
+(** Persistent semantic index on an existing SQLite connection. *)
+
+type t
+
+val attach : model_id:string -> Sqlite3.db -> (t, string) result
+(** Create the independent Oonnxx tables, load the bundled Vec1 extension,
+    and import vectors from an existing 0.1 index. The caller owns the
+    connection. [model_id] must identify the exact embedding model and
+    tokenizer. *)
+
+val open_readonly : model_id:string -> Sqlite3.db -> (t, string) result
+(** Open an existing index without changing the database. *)
+
+val upsert : t -> id:string -> text:string -> vector:float array -> (unit, string) result
+(* Insert or update a batch in one SQLite transaction. *)
+val upsert_many : t -> (string * string * float array) list -> (unit, string) result
+val delete : t -> id:string -> (unit, string) result
+val search_fts : t -> query:string -> limit:int -> (string list, string) result
+
+val search_vector :
+  ?exact:bool -> ?nprobe:float -> t -> query:float array -> limit:int ->
+  ((string * float) list, string) result
+(** Search the persistent Vec1 index. After [rebuild_ann], the default is
+    approximate IVF search. [exact=true] scans all vectors. *)
+
+val rebuild_ann : ?threads:int -> t -> nbucket:int -> training_limit:int -> (unit, string) result
+(** Train a cosine IVF index from a sampled subset and rebuild it in SQLite.
+    Subsequent writes update the index incrementally. *)
+
+val search_hybrid :
+  t -> text:string -> vector:float array -> limit:int ->
+  ((string * float) list, string) result

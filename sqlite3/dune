@@ -1,0 +1,13 @@
+(library
+ (name oonnxx_sqlite3)
+ (public_name oonnxx.sqlite3)
+ (libraries oonnxx sqlite3 findlib))
+
+(rule
+ (target vec1.so)
+ (deps vendor/vec1.c)
+ (action (run %{cc} -O3 -DNDEBUG -fPIC -shared %{dep:vendor/vec1.c} -o %{target})))
+
+(install
+ (section lib)
+ (files vec1.so))

@@ -16,6 +16,8 @@ depends: [
   "uunf"
   "caqti" {>= "2.3"}
   "caqti-driver-sqlite3"
+  "sqlite3"
+  "ocamlfind"
   "eio"
   "eio_main" {with-test}
   "uri" {with-test}

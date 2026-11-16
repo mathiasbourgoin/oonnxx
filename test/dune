@@ -4,7 +4,11 @@
 
 (test
  (name test_caqti)
- (libraries oonnxx oonnxx.caqti caqti.blocking caqti-driver-sqlite3 uri unix))
+ (libraries oonnxx oonnxx.caqti oonnxx.sqlite3 sqlite3 caqti caqti.classic caqti.blocking caqti-driver-sqlite3 uri unix)
+ (deps ../sqlite3/vec1.so)
+ (action
+  (setenv OONNXX_VEC1_EXTENSION %{dep:../sqlite3/vec1.so}
+   (run %{test}))))
 
 (test
  (name test_eio)

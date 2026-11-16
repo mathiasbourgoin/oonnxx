@@ -1,0 +1,3 @@
+(executable
+ (name million_vectors)
+ (libraries oonnxx oonnxx.sqlite3 sqlite3 unix))

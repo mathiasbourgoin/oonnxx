@@ -1,10 +1,10 @@
 # Oonnxx
 
-Oonnxx helps OCaml applications build **semantic indexes in SQLite**: store text passages with their embeddings, then retrieve passages by meaning, by keyword, or with both rankings combined. A query in English can retrieve a relevant passage in French. The library computes multilingual E5 embeddings locally through ONNX Runtime and connects directly to an existing Caqti SQLite connection.
+Oonnxx helps OCaml applications build **semantic indexes in SQLite**: store text passages with their embeddings, then retrieve passages by meaning, by keyword, or with both rankings combined. A query in English can retrieve a relevant passage in French. The library computes multilingual E5 embeddings locally through ONNX Runtime and works with an existing `Sqlite3.db` or Caqti SQLite connection. Its bundled SQLite Vec1 extension provides a persistent approximate nearest-neighbor index for larger collections.
 
 ## Install and supply a model
 
-Oonnxx currently supports Linux and builds without ONNX Runtime installed:
+Oonnxx currently supports Linux and builds without ONNX Runtime installed. From a source checkout:
 
 ```sh
 opam pin add oonnxx .
@@ -19,46 +19,70 @@ The model and runtime binaries are supplied separately; opam does not download t
 
 ## Index passages and search
 
-This example assumes an existing `Caqti_blocking.CONNECTION` to SQLite and the model files at the paths shown. Add `oonnxx`, `oonnxx.caqti`, and your Caqti SQLite driver to the application's Dune dependencies.
+Add `oonnxx`, `oonnxx.sqlite3`, and `sqlite3` to the application's Dune dependencies. This example opens a writable SQLite database and assumes the model files are at the paths shown:
 
 ```ocaml
 let engine =
   Oonnxx.open_model ~model:"model_O4.onnx" ~tokenizer:"tokenizer.json"
 
-let index =
-  Oonnxx_caqti.attach
-    ~model_id:"e5-small-o4:<model-sha256>:<tokenizer-sha256>" conn
-  |> Result.get_ok
-
-let () =
-  Oonnxx_caqti.upsert index ~id:"passage-1" ~text:"un chat noir"
-    ~vector:(Oonnxx.embed_passage engine "un chat noir")
-  |> Result.get_ok
-
 let matches =
-  Oonnxx_caqti.search_hybrid index ~text:"black cat"
-    ~vector:(Oonnxx.embed_query engine "black cat") ~limit:10
-  |> Result.get_ok
-(* matches : (passage_id * fused_score) list *)
+  let db = Sqlite3.db_open "passages.sqlite" in
+  let index =
+    Oonnxx_sqlite3.attach
+      ~model_id:"e5-small-o4:<model-sha256>:<tokenizer-sha256>" db
+    |> Result.get_ok in
+  let passages = [ "passage-1", "un chat noir"; "passage-2", "database schema" ] in
+  let rows =
+    List.map (fun (id, text) -> id, text, Oonnxx.embed_passage engine text)
+      passages in
+  Oonnxx_sqlite3.upsert_many index rows |> Result.get_ok;
+  let results =
+    Oonnxx_sqlite3.search_hybrid index ~text:"black cat"
+      ~vector:(Oonnxx.embed_query engine "black cat") ~limit:10
+    |> Result.get_ok in
+  ignore (Sqlite3.db_close db);
+  results
+(* (passage_id * fused_score) list *)
 ```
 
-Replace the placeholders in `model_id` with the hashes of the exact model and tokenizer files used to create the index. The adapter records this ID and the vector dimension, and refuses to mix incompatible embeddings. `upsert` updates both the stored vector and the SQLite FTS5 text index; `delete` removes both. The caller owns and closes the Caqti connection.
+Replace the placeholders in `model_id` with the hashes of the exact model and tokenizer files used to create the index. `attach` loads the bundled Vec1 extension and creates Oonnxx's tables in the existing database; it also imports vectors from a previous Oonnxx index. It records the model ID and vector dimension and refuses incompatible embeddings. `upsert_many` writes a batch in one transaction, updating both the FTS5 text index and the Vec1 vector index. Single-row `upsert` and `delete` keep both indexes current. The caller owns and closes the SQLite connection.
 
-`search_vector` ranks by cosine similarity; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. The returned scores from the three search methods have different meanings and should not be compared across methods. The adapter uses its own tables and does not change other application tables.
+The package installs `vec1.so` with the library and loads it for each attached SQLite connection. If the extension has been relocated, set `OONNXX_VEC1_EXTENSION` to its file path. SQLite must support loadable extensions; `attach` and `open_readonly` return an error when Vec1 cannot be loaded.
+
+For an existing `Caqti_blocking.CONNECTION` using the SQLite3 driver, use `Oonnxx_caqti.attach ~model_id conn` instead and add `oonnxx.caqti` to the Dune dependencies. The Caqti facade exposes the same indexing, rebuild, and search functions. It uses the driver's underlying SQLite connection, so keep the blocking connection on the thread that created it.
+
+`search_vector` searches Vec1 by cosine distance; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. The returned scores from these methods have different meanings and should not be compared across methods. Oonnxx's tables are independent of other application tables.
+
+## Build and use the approximate index
+
+Passages can be searched before ANN training. Once at least four times `nbucket` vectors are stored, call `rebuild_ann` while the writable `index` handle is open to train a persistent cosine IVF index from a sample of stored vectors:
+
+```ocaml
+Oonnxx_sqlite3.rebuild_ann index ~nbucket:256 ~training_limit:16_384
+|> Result.get_ok
+```
+
+`nbucket` must be between 2 and 65,536; `training_limit` must be at least four times `nbucket`. The function samples at most `training_limit` vectors, rebuilds the index in SQLite, and can take `~threads` to control training parallelism. Later inserts, updates, and deletes update the trained index incrementally. Rebuilding is an explicit operation, not part of each write.
+
+After a rebuild, `search_vector` defaults to approximate search (`nprobe = 0.05`, a fraction of buckets). Increase `~nprobe` to search more buckets; values of at least 1 select an absolute bucket count. Use `search_vector ~exact:true` when you need an exhaustive scan and exact cosine scores. `search_hybrid` uses the default vector search, so after a rebuild its semantic candidates are approximate. ANN results can omit neighbors returned by exact search; tune `nprobe` against recall and latency on your data.
+
+To query an existing database without changing it, open a read-only `Sqlite3.db` and call `Oonnxx_sqlite3.open_readonly ~model_id db`. It loads Vec1 and checks the stored model ID but does not create or migrate tables; writes and `rebuild_ann` through that handle return errors. `Oonnxx_caqti.open_readonly` provides the same behavior for a Caqti SQLite connection.
 
 For large inputs, split files into passages and give each passage a stable ID. Inputs above 16 KiB are rejected, and tokenization keeps at most 510 body tokens per passage. `Oonnxx_eio.embed_passages` embeds independent passages on Eio domains with a caller-selected concurrency limit and preserves input order; add `oonnxx.eio` to the Dune dependencies.
 
 ## Current limits
 
-Version 0.1.0 was tested on Linux x86-64 with ONNX Runtime 1.23.2 and the model files above. The tokenizer matches the Hugging Face implementation on the French and English cases in `test/test_oonnxx.ml`. It implements Unicode NFKC and the whitespace behavior exercised by those cases, but does not decode the model's complete precompiled normalization table. Validate other scripts and unusual Unicode before relying on exact token parity.
+The embedding path was tested on Linux x86-64 with ONNX Runtime 1.23.2 and the model files above. The tokenizer matches the Hugging Face implementation on the French and English cases in `test/test_oonnxx.ml`. It implements Unicode NFKC and the whitespace behavior exercised by those cases, but does not decode the model's complete precompiled normalization table. Validate other scripts and unusual Unicode before relying on exact token parity.
 
-Vector search scans every stored vector, retaining only the requested best results in memory. The Eio helper provides CPU parallelism across passages; it does not batch inputs into one ONNX tensor. Measure throughput with your workload before choosing passage size and concurrency.
+Exact vector search scans every stored vector; approximate search needs a trained IVF index and trades recall for speed. The [million-vector benchmark](bench/RESULTS.md) reports indexing, training, recall against exact top-10, query latency, and database size for two synthetic corpora. It uses a scratch database with durability disabled, so its ingestion setup is unsuitable for application data. Measure recall, latency, and storage with your own corpus before choosing bucket count and `nprobe`.
+
+The Eio helper provides CPU parallelism across passages; it does not batch inputs into one ONNX tensor. Measure embedding throughput with your workload before choosing passage size and concurrency.
 
 The implementation uses OCaml and a small C binding to ONNX Runtime's C API. Its MIT-licensed C headers are included under `lib/vendor/` so package builds need no system ONNX Runtime headers.
 
 ## License
 
-Oonnxx is licensed under the MIT License. See [LICENSE](LICENSE). The vendored ONNX Runtime C headers retain their own [MIT license notice](lib/vendor/ONNXRUNTIME-LICENSE).
+Oonnxx is licensed under the MIT License. See [LICENSE](LICENSE). The vendored ONNX Runtime C headers retain their own [MIT license notice](lib/vendor/ONNXRUNTIME-LICENSE). The bundled [SQLite Vec1 source](sqlite3/vendor/vec1.c) carries its author's public-domain dedication.
 
 ## Run the tests
 

@@ -1,0 +1,282 @@
+type t = { db : Sqlite3.db; readonly : bool }
+
+let ( let* ) = Result.bind
+let guard f =
+  try f () with
+  | (Out_of_memory | Stack_overflow) as e -> raise e
+  | e -> Error (Printexc.to_string e)
+
+let sql_error db rc =
+  Printf.sprintf "SQLite %s: %s" (Sqlite3.Rc.to_string rc) (Sqlite3.errmsg db)
+
+let with_stmt db sql args f =
+  let stmt = Sqlite3.prepare db sql in
+  Fun.protect ~finally:(fun () -> ignore (Sqlite3.finalize stmt)) (fun () ->
+    match Sqlite3.bind_values stmt args with
+    | Sqlite3.Rc.OK -> f stmt
+    | rc -> Error (sql_error db rc))
+
+let run db sql args =
+  with_stmt db sql args (fun stmt ->
+    match Sqlite3.step stmt with
+    | Sqlite3.Rc.DONE -> Ok ()
+    | rc -> Error (sql_error db rc))
+
+let fold db sql args init f =
+  with_stmt db sql args (fun stmt ->
+    let rec loop acc =
+      match Sqlite3.step stmt with
+      | Sqlite3.Rc.ROW -> loop (f acc stmt)
+      | Sqlite3.Rc.DONE -> Ok acc
+      | rc -> Error (sql_error db rc) in
+    loop init)
+
+let first db sql args f =
+  with_stmt db sql args (fun stmt ->
+    match Sqlite3.step stmt with
+    | Sqlite3.Rc.ROW -> Ok (Some (f stmt))
+    | Sqlite3.Rc.DONE -> Ok None
+    | rc -> Error (sql_error db rc))
+
+let transaction db f =
+  let* () = run db "BEGIN IMMEDIATE" [] in
+  try
+    match f () with
+    | Ok result ->
+        (match run db "COMMIT" [] with
+         | Ok () -> Ok result
+         | Error error ->
+             ignore (run db "ROLLBACK" []);
+             Error error)
+    | Error error ->
+        ignore (run db "ROLLBACK" []);
+        Error error
+  with error ->
+    ignore (run db "ROLLBACK" []);
+    raise error
+
+let extension_path () =
+  match Sys.getenv_opt "OONNXX_VEC1_EXTENSION" with
+  | Some path when path <> "" -> path
+  | _ -> Filename.concat (Findlib.package_directory "oonnxx") "vec1.so"
+
+let load_vec1 db =
+  let path = extension_path () in
+  if not (Sys.file_exists path) then
+    Error ("Oonnxx_sqlite3: Vec1 extension not found: " ^ path)
+  else if not (Sqlite3.enable_load_extension db true) then
+    Error "Oonnxx_sqlite3: cannot enable SQLite extension loading"
+  else
+    Fun.protect ~finally:(fun () -> ignore (Sqlite3.enable_load_extension db false))
+      (fun () ->
+        let quoted = String.concat "''" (String.split_on_char '\'' path) in
+        match Sqlite3.exec db ("SELECT load_extension('" ^ quoted ^ "')") with
+        | Sqlite3.Rc.OK -> Ok ()
+        | rc -> Error ("Oonnxx_sqlite3: cannot load Vec1: " ^ sql_error db rc))
+
+let schema =
+  [ "CREATE TABLE IF NOT EXISTS oonnxx_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)";
+    "CREATE TABLE IF NOT EXISTS oonnxx_documents (id TEXT PRIMARY KEY, text TEXT NOT NULL, embedding BLOB NOT NULL, dimension INTEGER NOT NULL)";
+    "CREATE VIRTUAL TABLE IF NOT EXISTS oonnxx_vec1 USING vec1(embedding)";
+    "CREATE VIRTUAL TABLE IF NOT EXISTS oonnxx_fts USING fts5(text, content='oonnxx_documents', content_rowid='rowid', tokenize='unicode61 remove_diacritics 1')";
+    "DROP TRIGGER IF EXISTS oonnxx_ai";
+    "DROP TRIGGER IF EXISTS oonnxx_ad";
+    "DROP TRIGGER IF EXISTS oonnxx_au";
+    "CREATE TRIGGER oonnxx_ai AFTER INSERT ON oonnxx_documents BEGIN INSERT INTO oonnxx_fts(rowid, text) VALUES (new.rowid, new.text); INSERT INTO oonnxx_vec1(rowid, embedding) VALUES (new.rowid, new.embedding); END";
+    "CREATE TRIGGER oonnxx_ad AFTER DELETE ON oonnxx_documents BEGIN INSERT INTO oonnxx_fts(oonnxx_fts, rowid, text) VALUES ('delete', old.rowid, old.text); DELETE FROM oonnxx_vec1 WHERE rowid=old.rowid; END";
+    "CREATE TRIGGER oonnxx_au AFTER UPDATE ON oonnxx_documents BEGIN INSERT INTO oonnxx_fts(oonnxx_fts, rowid, text) VALUES ('delete', old.rowid, old.text); INSERT INTO oonnxx_fts(rowid, text) VALUES (new.rowid, new.text); UPDATE oonnxx_vec1 SET embedding=new.embedding WHERE rowid=new.rowid; END" ]
+
+let metadata db name =
+  first db "SELECT value FROM oonnxx_metadata WHERE name=?"
+    [ Sqlite3.Data.TEXT name ] (fun stmt -> Sqlite3.column_text stmt 0)
+
+let set_metadata db name value =
+  run db
+    "INSERT INTO oonnxx_metadata(name,value) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value"
+    [ Sqlite3.Data.TEXT name; Sqlite3.Data.TEXT value ]
+
+let check_model_id db model_id =
+  let* existing = metadata db "model_id" in
+  match existing with
+  | Some id when id = model_id -> Ok ()
+  | Some _ -> Error "Oonnxx_sqlite3: model_id differs; rebuild the vector index"
+  | None -> Error "Oonnxx_sqlite3: index has no model_id"
+
+let attach ~model_id db =
+  guard (fun () ->
+    if model_id = "" then invalid_arg "Oonnxx_sqlite3: empty model_id";
+    let* () = load_vec1 db in
+    let* () = transaction db (fun () ->
+      let* () = List.fold_left (fun state sql -> let* () = state in run db sql []) (Ok ()) schema in
+      let* existing = metadata db "model_id" in
+      let* () =
+        match existing with
+        | None -> set_metadata db "model_id" model_id
+        | Some _ -> check_model_id db model_id in
+      run db
+        "INSERT INTO oonnxx_vec1(rowid, embedding) SELECT d.rowid, d.embedding FROM oonnxx_documents d WHERE NOT EXISTS (SELECT 1 FROM oonnxx_vec1 v WHERE v.rowid=d.rowid)"
+        []) in
+    Ok { db; readonly = false })
+
+let open_readonly ~model_id db =
+  guard (fun () ->
+    if model_id = "" then invalid_arg "Oonnxx_sqlite3: empty model_id";
+    let* () = load_vec1 db in
+    let* () = check_model_id db model_id in
+    Ok { db; readonly = true })
+
+let validate_vector vector =
+  if Array.length vector = 0 then invalid_arg "Oonnxx_sqlite3: empty vector";
+  Array.iter (fun value ->
+    if not (Float.is_finite value) then invalid_arg "Oonnxx_sqlite3: nonfinite vector") vector;
+  ignore (Oonnxx.cosine vector vector)
+
+let require_writable t =
+  if t.readonly then Error "Oonnxx_sqlite3: index is read-only" else Ok ()
+
+let upsert_many t rows =
+  guard (fun () ->
+    let* () = require_writable t in
+    match rows with
+    | [] -> Ok ()
+    | (_, _, first_vector) :: _ ->
+        let dimension = Array.length first_vector in
+        List.iter (fun (id, _, vector) ->
+          if id = "" then invalid_arg "Oonnxx_sqlite3: empty id";
+          validate_vector vector;
+          if Array.length vector <> dimension then
+            invalid_arg "Oonnxx_sqlite3: mixed dimensions in batch") rows;
+        transaction t.db (fun () ->
+          let dim_text = string_of_int dimension in
+          let* existing = metadata t.db "dimension" in
+          let* () =
+            match existing with
+            | None -> set_metadata t.db "dimension" dim_text
+            | Some value when value = dim_text -> Ok ()
+            | Some _ -> Error "Oonnxx_sqlite3: vector dimension differs from index" in
+          List.fold_left (fun state (id, text, vector) ->
+            let* () = state in
+            run t.db
+              "INSERT INTO oonnxx_documents(id,text,embedding,dimension) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text, embedding=excluded.embedding, dimension=excluded.dimension"
+              [ Sqlite3.Data.TEXT id; Sqlite3.Data.TEXT text;
+                Sqlite3.Data.BLOB (Oonnxx.encode_f32le vector);
+                Sqlite3.Data.INT (Int64.of_int dimension) ])
+            (Ok ()) rows))
+
+let upsert t ~id ~text ~vector = upsert_many t [ id, text, vector ]
+
+let delete t ~id =
+  guard (fun () ->
+    let* () = require_writable t in
+    run t.db "DELETE FROM oonnxx_documents WHERE id=?" [ Sqlite3.Data.TEXT id ])
+
+let search_fts t ~query ~limit =
+  guard (fun () ->
+    if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
+    let* reversed =
+      fold t.db
+        "SELECT d.id FROM oonnxx_fts JOIN oonnxx_documents d ON d.rowid=oonnxx_fts.rowid WHERE oonnxx_fts MATCH ? ORDER BY bm25(oonnxx_fts), d.id LIMIT ?"
+        [ Sqlite3.Data.TEXT query; Sqlite3.Data.INT (Int64.of_int limit) ]
+        [] (fun acc stmt -> Sqlite3.column_text stmt 0 :: acc) in
+    Ok (List.rev reversed))
+
+let check_query_dimension t query =
+  let* dimension = metadata t.db "dimension" in
+  match dimension with
+  | None -> Ok ()
+  | Some value when value = string_of_int (Array.length query) -> Ok ()
+  | Some _ -> Error "Oonnxx_sqlite3: query dimension differs from index"
+
+let search_vector_exact t ~query ~limit =
+  guard (fun () ->
+    if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
+    validate_vector query;
+    let* () = check_query_dimension t query in
+    fold t.db "SELECT id, embedding, dimension FROM oonnxx_documents ORDER BY id" [] []
+      (fun best stmt ->
+        let id = Sqlite3.column_text stmt 0 in
+        let vector = Oonnxx.decode_f32le (Sqlite3.column_blob stmt 1) in
+        if Array.length vector <> Sqlite3.column_int stmt 2 ||
+           Array.length vector <> Array.length query then
+          failwith ("Oonnxx_sqlite3: inconsistent vector dimension for " ^ id);
+        let score = Oonnxx.cosine query vector in
+        (id, score) :: best
+        |> List.sort (fun (a, x) (b, y) ->
+             let order = Float.compare y x in
+             if order = 0 then String.compare a b else order)
+        |> List.filteri (fun index _ -> index < limit)))
+
+let search_vector ?(exact = false) ?(nprobe = 0.05) t ~query ~limit =
+  if exact then search_vector_exact t ~query ~limit
+  else
+    guard (fun () ->
+      if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
+      if not (Float.is_finite nprobe) || nprobe <= 0. then
+        invalid_arg "Oonnxx_sqlite3: nprobe must be positive and finite";
+      validate_vector query;
+      let* () = check_query_dimension t query in
+      let options = Printf.sprintf "{K:%d,nprobe:%.17g}" limit nprobe in
+      let* reversed =
+        fold t.db
+          "SELECT d.id, 1.0-v.distance FROM oonnxx_vec1(?,?) v JOIN oonnxx_documents d ON d.rowid=v.rowid ORDER BY v.distance, d.id LIMIT ?"
+          [ Sqlite3.Data.BLOB (Oonnxx.encode_f32le query);
+            Sqlite3.Data.TEXT options; Sqlite3.Data.INT (Int64.of_int limit) ]
+          [] (fun acc stmt ->
+            (Sqlite3.column_text stmt 0, Sqlite3.column_double stmt 1) :: acc) in
+      Ok (List.rev reversed))
+
+let rebuild_ann ?(threads = 1) t ~nbucket ~training_limit =
+  guard (fun () ->
+    let* () = require_writable t in
+    if nbucket < 2 || nbucket > 65536 then
+      invalid_arg "Oonnxx_sqlite3: nbucket must be between 2 and 65536";
+    if training_limit < nbucket * 4 then
+      invalid_arg "Oonnxx_sqlite3: training_limit must be at least 4 * nbucket";
+    if threads < 1 then invalid_arg "Oonnxx_sqlite3: threads must be positive";
+    let* _ = first t.db "SELECT vec1_config('nthread', ?)"
+        [ Sqlite3.Data.INT (Int64.of_int threads) ]
+        (fun stmt -> Sqlite3.column_text stmt 0) in
+    let options =
+      Printf.sprintf "{nbucket:%d,distance:\"cos\",quantizer:\"none\",codesize:0}"
+        nbucket in
+    let* model =
+      first t.db
+        "WITH training AS (SELECT embedding FROM oonnxx_vec1 ORDER BY RANDOM() LIMIT ?) SELECT vec1_train(embedding, ?) FROM training"
+        [ Sqlite3.Data.INT (Int64.of_int training_limit); Sqlite3.Data.TEXT options ]
+        (fun stmt -> Sqlite3.column_blob stmt 0) in
+    match model with
+    | None -> Error "Oonnxx_sqlite3: no vectors available to train ANN index"
+    | Some model ->
+        transaction t.db (fun () ->
+          let* () = run t.db "INSERT INTO oonnxx_vec1(cmd,arg) VALUES ('rebuild',?)"
+              [ Sqlite3.Data.BLOB model ] in
+          set_metadata t.db "ann_mode" "ivf"))
+
+let literal_fts_query text =
+  let words =
+    String.split_on_char ' ' text
+    |> List.concat_map (String.split_on_char '\n')
+    |> List.concat_map (String.split_on_char '\t')
+    |> List.filter (fun word ->
+         String.exists (fun c ->
+           let code = Char.code c in
+           (code >= 48 && code <= 57) || (code >= 65 && code <= 90)
+           || (code >= 97 && code <= 122) || code >= 128) word) in
+  words
+  |> List.map (fun word ->
+       let escaped = String.concat "\"\"" (String.split_on_char '"' word) in
+       "\"" ^ escaped ^ "\"")
+  |> String.concat " OR "
+
+let search_hybrid t ~text ~vector ~limit =
+  if limit <= 0 then Error "Oonnxx_sqlite3: limit must be positive"
+  else
+    let candidates = if limit > 3333 then 10000 else limit * 3 in
+    let fts_query = literal_fts_query text in
+    let* fts =
+      if fts_query = "" then Ok []
+      else search_fts t ~query:fts_query ~limit:candidates in
+    let* semantic = search_vector t ~query:vector ~limit:candidates in
+    let ids = List.map fst semantic in
+    Ok (Oonnxx.reciprocal_rank_fusion [ fts; ids ]
+        |> List.filteri (fun index _ -> index < limit))
