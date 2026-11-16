@@ -6,7 +6,6 @@
  (foreign_stubs
   (language c)
   (names onnx_stubs)
-  (flags (:standard -I%{env:ONNXRUNTIME_ROOT=/usr}/include)))
+  (include_dirs vendor))
  (c_library_flags
-  -L%{env:ONNXRUNTIME_ROOT=/usr}/lib
-  -lonnxruntime))
+  -ldl))

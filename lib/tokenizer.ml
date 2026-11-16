@@ -54,7 +54,12 @@ let normalize_nfkc text =
   in
   let rec decode () =
     match Uutf.decode decoder with
-    | `Uchar scalar -> feed (`Uchar scalar); decode ()
+    | `Uchar scalar ->
+        (match Uchar.to_int scalar with
+         | 0x0007 -> ()
+         | 0x200b | 0x2028 -> feed (`Uchar (Uchar.of_int 0x20))
+         | _ -> feed (`Uchar scalar));
+        decode ()
     | `End -> feed `End
     | `Malformed _ -> invalid_arg "Oonnxx: malformed UTF-8 input"
     | `Await -> assert false

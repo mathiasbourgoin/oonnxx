@@ -7,7 +7,8 @@ val open_model : model:string -> tokenizer:string -> t
     Raises [Failure] on errors. *)
 
 val tokenize : t -> string -> int array
-(** Return model input IDs including the E5 [<s>] and [</s>] tokens. *)
+(** Return model input IDs including the E5 [<s>] and [</s>] tokens.
+    Inputs above 16 KiB are rejected; split files into passages first. *)
 
 val embed_query : t -> string -> float array
 val embed_passage : t -> string -> float array

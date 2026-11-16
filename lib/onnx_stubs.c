@@ -5,6 +5,7 @@
 #include <caml/mlvalues.h>
 #include <caml/threads.h>
 #include <onnxruntime_c_api.h>
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 
 typedef struct {
   const OrtApi *api;
+  void *library;
   OrtEnv *env;
   OrtSession *session;
 } oonnxx_session;
@@ -20,6 +22,7 @@ static void session_finalize(value v) {
   oonnxx_session *s = (oonnxx_session *)Data_custom_val(v);
   if (s->session) s->api->ReleaseSession(s->session);
   if (s->env) s->api->ReleaseEnv(s->env);
+  if (s->library) dlclose(s->library);
 }
 
 static struct custom_operations session_ops = {
@@ -41,11 +44,24 @@ static void raise_status(const OrtApi *api, OrtStatus *status) {
 CAMLprim value oonnxx_ort_open(value path) {
   CAMLparam1(path);
   CAMLlocal1(result);
-  const OrtApi *api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
-  if (!api) caml_failwith("Oonnxx: incompatible ONNX Runtime C API");
+  const char *library_path = getenv("ONNXRUNTIME_LIBRARY");
+  if (!library_path || !*library_path) library_path = "libonnxruntime.so";
+  void *library = dlopen(library_path, RTLD_NOW | RTLD_LOCAL);
+  if (!library) caml_failwith("Oonnxx: cannot load ONNX Runtime; set ONNXRUNTIME_LIBRARY");
+  const OrtApiBase *(*get_api_base)(void) = dlsym(library, "OrtGetApiBase");
+  if (!get_api_base) {
+    dlclose(library);
+    caml_failwith("Oonnxx: ONNX Runtime C API symbol missing");
+  }
+  const OrtApi *api = get_api_base()->GetApi(ORT_API_VERSION);
+  if (!api) {
+    dlclose(library);
+    caml_failwith("Oonnxx: incompatible ONNX Runtime C API");
+  }
   result = caml_alloc_custom(&session_ops, sizeof(oonnxx_session), 0, 1);
   oonnxx_session *s = (oonnxx_session *)Data_custom_val(result);
   s->api = api;
+  s->library = library;
   s->env = NULL;
   s->session = NULL;
   OrtSessionOptions *options = NULL;

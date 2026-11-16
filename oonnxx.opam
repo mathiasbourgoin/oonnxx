@@ -4,6 +4,10 @@ description: "OCaml library for multilingual E5 embeddings using ONNX Runtime an
 maintainer: "Mathias Bourgoin"
 authors: ["Mathias Bourgoin"]
 license: "MIT"
+homepage: "https://github.com/mathiasbourgoin/oonnxx"
+bug-reports: "https://github.com/mathiasbourgoin/oonnxx/issues"
+dev-repo: "git+https://github.com/mathiasbourgoin/oonnxx.git"
+available: os = "linux"
 depends: [
   "ocaml" {>= "5.1"}
   "dune" {>= "3.16"}
@@ -13,8 +17,10 @@ depends: [
   "caqti" {>= "2.3"}
   "caqti-driver-sqlite3"
   "eio"
+  "eio_main" {with-test}
+  "uri" {with-test}
 ]
 build: [
   ["dune" "subst"] {dev}
-  ["dune" "build" "-p" name "-j" jobs]
+  ["dune" "build" "-p" name "-j" jobs "@install" "@runtest" {with-test}]
 ]

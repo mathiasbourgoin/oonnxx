@@ -8,6 +8,10 @@ let () =
   check (fst (List.hd ranked) = "a") "vector ranking";
   let fused = Oonnxx.reciprocal_rank_fusion [ [ "a"; "b" ]; [ "b"; "c" ] ] in
   check (fst (List.hd fused) = "b") "rank fusion";
+  let deduplicated = Oonnxx.reciprocal_rank_fusion [ [ "a"; "a" ]; [ "b" ] ] in
+  check (fst (List.hd deduplicated) = "a") "duplicate rank ignored";
+  (try ignore (Oonnxx.cosine [| nan |] [| 1. |]); failwith "NaN accepted"
+   with Invalid_argument _ -> ());
   let blob = Oonnxx.encode_f32le [| 1.; -0.5; 0. |] in
   check (Oonnxx.decode_f32le blob = [| 1.; -0.5; 0. |]) "f32 blob round-trip";
   match Sys.getenv_opt "OONNXX_TEST_MODEL", Sys.getenv_opt "OONNXX_TEST_TOKENIZER" with
@@ -29,6 +33,16 @@ let () =
           "query:  déjà   vu  ", [| 0; 41; 1294; 12; 15154; 13946; 6; 2 |];
           "query: naïve façade", [| 0; 41; 1294; 12; 24; 9392; 272; 65335; 112; 2 |];
           "query: 🚀 search", [| 0; 41; 1294; 12; 6; 247206; 33938; 2 |] ];
+      List.iter (fun text ->
+        check
+          (Oonnxx.tokenize engine text =
+           Oonnxx.tokenize engine "query: foo bar")
+          "E5 whitespace normalization")
+        [ "query: foo\u{200b}bar"; "query: foo\u{2028}bar" ];
+      check
+        (Oonnxx.tokenize engine "query: foo\007bar" =
+         Oonnxx.tokenize engine "query: foobar")
+        "E5 control normalization";
       let query = Oonnxx.embed_query engine "black cat" in
       let related = Oonnxx.embed_passage engine "un chat noir" in
       let unrelated = Oonnxx.embed_passage engine "database schema migration" in

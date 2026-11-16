@@ -10,15 +10,13 @@ The library contains OCaml and a small C binding for ONNX Runtime. There is no C
 
 ## Build
 
-Provide ONNX Runtime 1.23.2's development headers and shared library. Set `ONNXRUNTIME_ROOT` to their prefix, with `include/onnxruntime_c_api.h` and `lib/libonnxruntime.so`. If installed under `/usr`, the variable is unnecessary. Its library directory must be on the runtime linker path.
+The package builds without ONNX Runtime installed. At run time, provide ONNX Runtime 1.23.2's shared library. Oonnxx loads `libonnxruntime.so` from the normal linker path, or the file named by `ONNXRUNTIME_LIBRARY`. The source includes ONNX Runtime's MIT-licensed C headers under `lib/vendor/` so opam can build the binding without system headers.
 
 ```sh
-ONNXRUNTIME_ROOT=/path/to/onnxruntime \
-LD_LIBRARY_PATH=/path/to/onnxruntime/lib \
 opam pin add oonnxx .
 ```
 
-The opam package installs OCaml dependencies `yojson`, `uutf`, and `uunf`. ONNX Runtime is a native external dependency; opam does not download a model or runtime binary.
+The opam package installs OCaml dependencies `yojson`, `uutf`, `uunf`, `caqti`, `caqti-driver-sqlite3`, and `eio`. ONNX Runtime is a runtime dependency; opam does not download a model or runtime binary. `Oonnxx.open_model` returns an error if the shared library is unavailable.
 
 ## Model assets
 
@@ -41,17 +39,16 @@ let restored = Oonnxx.decode_f32le blob in
 ignore (score, restored)
 ```
 
-`Oonnxx_caqti.attach` takes the consumer's existing `Caqti_blocking.CONNECTION`, creates the `oonnxx_documents` and FTS5 tables, and provides `upsert`, `delete`, `search_fts`, `search_vector`, and `search_hybrid`. `search_vector` streams rows, keeping only the requested top results in memory; it still scans all stored vectors. Use `oonnxx.caqti` as a Dune library dependency.
+`Oonnxx_caqti.attach ~model_id` takes the consumer's existing `Caqti_blocking.CONNECTION`, creates the `oonnxx_documents` and FTS5 tables, and provides `upsert`, `delete`, `search_fts`, `search_vector`, and `search_hybrid`. Use a stable ID incorporating the exact model and tokenizer hashes; a mismatched ID is refused on reopen. `search_vector` streams rows, keeping only the requested top results in memory; it still scans all stored vectors. Use `oonnxx.caqti` as a Dune library dependency.
 
 For Session Mesh, use the existing history database connection, derive a stable document ID from each history chunk, and call `upsert` after the chunk transaction commits. Call `delete` when a chunk is removed. The adapter's tables are independent of the history schema, so it does not alter the history migration state. Its blocking connection must remain on the thread that created it, as required by Caqti's blocking API.
 
-`Oonnxx_eio.embed_passages` runs independent embeddings on Eio domains with a caller-selected concurrency limit. Use `oonnxx.eio` as a Dune library dependency. This is CPU parallelism; it is not an ONNX batch tensor and makes no throughput claim without a workload measurement.
+`Oonnxx_eio.embed_passages` runs independent embeddings on Eio domains with a caller-selected concurrency limit. Use `oonnxx.eio` as a Dune library dependency. Split large files into passages before calling it: one embedding input is limited to 16 KiB and at most 510 body tokens. This is CPU parallelism; it is not an ONNX batch tensor and makes no throughput claim without a workload measurement.
 
 ## Test
 
 ```sh
-ONNXRUNTIME_ROOT=/path/to/onnxruntime \
-LD_LIBRARY_PATH=/path/to/onnxruntime/lib \
+ONNXRUNTIME_LIBRARY=/path/to/libonnxruntime.so \
 OONNXX_TEST_MODEL=/path/to/model_O4.onnx \
 OONNXX_TEST_TOKENIZER=/path/to/tokenizer.json \
 dune runtest

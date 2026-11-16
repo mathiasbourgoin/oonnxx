@@ -10,6 +10,8 @@ let open_model ~model ~tokenizer =
   { runtime; tokenizer }
 
 let tokenize t text =
+  if String.length text > 16_384 then
+    invalid_arg "Oonnxx.tokenize: input exceeds 16 KiB; split into passages";
   let body = Tokenizer.encode t.tokenizer text in
   let length = min (Array.length body) 510 in
   Array.init (length + 2) (function
@@ -45,6 +47,8 @@ let cosine a b =
     invalid_arg "Oonnxx.cosine: vector dimensions differ or are empty";
   let dot = ref 0. and an = ref 0. and bn = ref 0. in
   for i = 0 to Array.length a - 1 do
+    if not (Float.is_finite a.(i) && Float.is_finite b.(i)) then
+      invalid_arg "Oonnxx.cosine: nonfinite vector";
     dot := !dot +. (a.(i) *. b.(i));
     an := !an +. (a.(i) *. a.(i));
     bn := !bn +. (b.(i) *. b.(i))
@@ -61,9 +65,12 @@ let reciprocal_rank_fusion ?(k = 60) lists =
   if k <= 0 then invalid_arg "Oonnxx.reciprocal_rank_fusion: k must be positive";
   let scores = Hashtbl.create 32 in
   List.iter (fun ids ->
+    let seen = Hashtbl.create (List.length ids) in
     List.iteri (fun index id ->
-      let old = Option.value (Hashtbl.find_opt scores id) ~default:0. in
-      Hashtbl.replace scores id (old +. (1. /. float_of_int (k + index + 1)))) ids) lists;
+      if not (Hashtbl.mem seen id) then (
+        Hashtbl.add seen id ();
+        let old = Option.value (Hashtbl.find_opt scores id) ~default:0. in
+        Hashtbl.replace scores id (old +. (1. /. float_of_int (k + index + 1))))) ids) lists;
   Hashtbl.fold (fun id score acc -> (id, score) :: acc) scores []
   |> List.sort (fun (id_a, a) (id_b, b) ->
        let cmp = Float.compare b a in
