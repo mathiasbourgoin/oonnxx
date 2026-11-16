@@ -8,8 +8,9 @@ let open_model_with ?threads ~model ~tokenizer () =
   let threads =
     match threads with
     | None -> 0
-    | Some count when count >= 1 -> count
-    | Some _ -> invalid_arg "Oonnxx.open_model: threads must be positive" in
+    | Some count when count >= 1 && count <= 0x7fff_ffff -> count
+    | Some _ ->
+        invalid_arg "Oonnxx.open_model_with: threads must be between 1 and 2^31 - 1" in
   let tokenizer = Tokenizer.load tokenizer in
   let runtime = runtime_open model threads in
   { runtime; tokenizer }

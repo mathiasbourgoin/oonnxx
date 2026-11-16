@@ -17,9 +17,11 @@ let cores_used engine =
   (cpu /. elapsed, vectors)
 
 let check_thread_option ~model ~tokenizer =
-  (try ignore (Oonnxx.open_model_with ~threads:0 ~model ~tokenizer ());
-     failwith "threads:0 accepted"
-   with Invalid_argument _ -> ());
+  List.iter (fun threads ->
+    try ignore (Oonnxx.open_model_with ~threads ~model ~tokenizer ());
+      failwith (Printf.sprintf "threads:%d accepted" threads)
+    with Invalid_argument _ -> ())
+    [ 0; -1; 0x8000_0000 ];
   let single = Oonnxx.open_model_with ~threads:1 ~model ~tokenizer () in
   ignore (cores_used single);
   let single_cores, single_vectors = cores_used single in

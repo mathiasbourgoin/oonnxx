@@ -12,7 +12,8 @@ val open_model_with :
     intra-op and inter-op thread counts of the session; [threads=1] runs each
     inference on the calling thread. Without [threads], ONNX Runtime chooses
     its defaults (an intra-op pool sized to the machine's cores, whose threads
-    spin while waiting). Raises [Invalid_argument] if [threads < 1]. *)
+    spin while waiting). Raises [Invalid_argument] unless
+    [1 <= threads <= 2{^31} - 1]. *)
 
 val tokenize : t -> string -> int array
 (** Return model input IDs including the E5 [<s>] and [</s>] tokens.
