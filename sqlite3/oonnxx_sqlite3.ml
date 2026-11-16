@@ -182,9 +182,16 @@ let delete t ~id =
     let* () = require_writable t in
     run t.db "DELETE FROM oonnxx_documents WHERE id=?" [ Sqlite3.Data.TEXT id ])
 
+(* ASCII whitespace and NUL. SQLite stops reading a query string at a NUL
+   byte, so a NUL inside a quoted word would leave it unterminated. *)
+let is_query_separator = function
+  | ' ' | '\t' | '\n' | '\011' | '\012' | '\r' | '\000' -> true
+  | _ -> false
+
 let search_fts t ~query ~limit =
   guard (fun () ->
     if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
+    if String.for_all is_query_separator query then Ok [] else
     let* reversed =
       fold t.db
         "SELECT d.id FROM oonnxx_fts JOIN oonnxx_documents d ON d.rowid=oonnxx_fts.rowid WHERE oonnxx_fts MATCH ? ORDER BY bm25(oonnxx_fts), d.id LIMIT ?"
@@ -328,9 +335,8 @@ let rebuild_ann ?(threads = 1) t ~nbucket ~training_limit =
 
 let literal_fts_query text =
   let words =
-    String.split_on_char ' ' text
-    |> List.concat_map (String.split_on_char '\n')
-    |> List.concat_map (String.split_on_char '\t')
+    String.map (fun c -> if is_query_separator c then ' ' else c) text
+    |> String.split_on_char ' '
     |> List.filter (fun word ->
          String.exists (fun c ->
            let code = Char.code c in

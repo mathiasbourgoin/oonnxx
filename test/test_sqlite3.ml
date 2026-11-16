@@ -98,7 +98,12 @@ let literal_fts_query_contract () =
       "a AND b", "\"a\" OR \"AND\" OR \"b\"";
       "NOT NEAR OR", "\"NOT\" OR \"NEAR\" OR \"OR\"";
       "foo* ^bar col:baz", "\"foo*\" OR \"^bar\" OR \"col:baz\"";
-      "café 日本語", "\"café\" OR \"日本語\"" ]
+      "café 日本語", "\"café\" OR \"日本語\"";
+      "a\000b", "\"a\" OR \"b\"";
+      "drill\000", "\"drill\"";
+      "\000", "";
+      "a\rb\011c\012d", "\"a\" OR \"b\" OR \"c\" OR \"d\"";
+      "\r\011\012", "" ]
 
 (* Every query built by [literal_fts_query] must be accepted by FTS5 and
    match terms literally: operators and prefix markers lose their meaning. *)
@@ -126,10 +131,32 @@ let literal_fts_query_is_literal () =
     List.iter (fun text -> ignore (search text))
       [ "\"unbalanced"; "a\"\"b"; "(group"; "x)"; "NEAR(a b, 2)"; "-neg";
         "+plus"; "{col}: x"; "a OR"; "AND"; "—"; "\xff\xfe"; "drill\r";
-        "x:y:z"; "'single'" ])
+        "x:y:z"; "'single'"; "a\000b"; "drill\000"; "\000"; "x\011y\012z" ];
+    check (search "drill\000" = [ "not" ]) "NUL separates words";
+    List.iter (fun text ->
+      match
+        Oonnxx_sqlite3.search_hybrid index ~text ~vector:[| 1.; 0. |] ~limit:2
+      with
+      | Ok _ -> ()
+      | Error error ->
+          failwith (Printf.sprintf "search_hybrid failed for %S: %s" text error))
+      [ "a\000b"; "drill\000"; "\000" ])
+
+let blank_fts_query_returns_nothing () =
+  with_index (fun index ->
+    Oonnxx_sqlite3.upsert index ~id:"doc" ~text:"some text" ~vector:[| 1.; 0. |]
+    |> ok;
+    List.iter (fun query ->
+      match Oonnxx_sqlite3.search_fts index ~query ~limit:5 with
+      | Ok [] -> ()
+      | Ok _ -> failwith (Printf.sprintf "search_fts %S returned rows" query)
+      | Error error ->
+          failwith (Printf.sprintf "search_fts %S failed: %s" query error))
+      [ ""; " "; "\t\n " ])
 
 let () =
   literal_fts_query_contract ();
   literal_fts_query_is_literal ();
+  blank_fts_query_returns_nothing ();
   exact_search_matches_full_sort ();
   exact_search_full_depth_is_not_quadratic ()

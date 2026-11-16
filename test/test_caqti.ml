@@ -18,6 +18,11 @@ let () =
         (match Oonnxx_caqti.search_vector db ~query:[| 1.; 0.; 0. |] ~limit:2 with
          | Error _ -> ()
          | Ok _ -> failwith "wrong query dimension accepted");
+        check (Oonnxx_caqti.search_fts db ~query:"" ~limit:5 |> ok = [])
+          "empty FTS query";
+        check (Oonnxx_caqti.search_fts db
+          ~query:(Oonnxx_caqti.literal_fts_query "chat\000noir") ~limit:5
+          |> ok = [ "cat" ]) "NUL-separated literal query";
         let fts = Oonnxx_caqti.search_fts db ~query:"chat" ~limit:5 |> ok in
         check (fts = [ "cat" ]) "FTS insertion";
         let vector = Oonnxx_caqti.search_vector db ~query:[| 1.; 0. |] ~limit:2 |> ok in
