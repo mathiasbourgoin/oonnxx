@@ -47,7 +47,7 @@ let matches =
 
 Replace the placeholders in `model_id` with the hashes of the exact model and tokenizer files used to create the index. `attach` loads the bundled Vec1 extension and creates Oonnxx's tables in the existing database; it also imports vectors from a previous Oonnxx index. It records the model ID and vector dimension and refuses incompatible embeddings. `upsert_many` writes a batch in one transaction, updating both the FTS5 text index and the Vec1 vector index. Single-row `upsert` and `delete` keep both indexes current. The caller owns and closes the SQLite connection.
 
-The package installs `vec1.so` with the library and loads it for each attached SQLite connection. If the extension has been relocated, set `OONNXX_VEC1_EXTENSION` to its file path. SQLite must support loadable extensions; `attach` and `open_readonly` return an error when Vec1 cannot be loaded.
+The package installs `vec1.so` with the library and loads it for each attached SQLite connection. If the extension has been relocated, set `OONNXX_VEC1_EXTENSION` to its file path. SQLite 3.38.0 or newer is required at build time and run time, with loadable extensions enabled; `attach` and `open_readonly` return an error when Vec1 cannot be loaded.
 
 For an existing `Caqti_blocking.CONNECTION` using the SQLite3 driver, use `Oonnxx_caqti.attach ~model_id conn` instead and add `oonnxx.caqti` to the Dune dependencies. The Caqti facade exposes the same indexing, rebuild, and search functions. It uses the driver's underlying SQLite connection, so keep the blocking connection on the thread that created it.
 

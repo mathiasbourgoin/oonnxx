@@ -20,6 +20,9 @@ queries. Search order alternates between approximate-first and exact-first;
 the medians are warm-cache measurements. The exact path decodes each stored
 float32 vector and ranks it in OCaml. The approximate path probes Vec1's
 persistent IVF index. Both use the same SQLite database and original vectors.
+The corpus and query generator has a fixed seed, but the SQL training sample
+uses `ORDER BY RANDOM()`; a fresh build can therefore produce a different IVF
+model and different recall.
 
 Both databases used 256 buckets, 16,384 sampled training vectors, no product
 quantization, and 16 training threads. Initial ingestion took 28.2 s

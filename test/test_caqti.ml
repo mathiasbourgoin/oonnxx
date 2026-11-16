@@ -22,6 +22,12 @@ let () =
         check (fts = [ "cat" ]) "FTS insertion";
         let vector = Oonnxx_caqti.search_vector db ~query:[| 1.; 0. |] ~limit:2 |> ok in
         check (fst (List.hd vector) = "cat") "vector ranking";
+        Oonnxx_caqti.upsert db ~id:"long" ~text:"long vector"
+          ~vector:[| 10.; 0. |] |> ok;
+        let before_training = Oonnxx_caqti.search_vector db
+          ~query:[| 1.; 0. |] ~limit:3 |> ok in
+        check (abs_float (List.assoc "long" before_training -. 1.) < 0.000001)
+          "untrained search uses cosine";
         let hybrid = Oonnxx_caqti.search_hybrid db ~text:"chat" ~vector:[| 1.; 0. |] ~limit:2 |> ok in
         check (fst (List.hd hybrid) = "cat") "hybrid ranking";
         let punctuation = Oonnxx_caqti.search_hybrid db ~text:"chat?" ~vector:[| 1.; 0. |] ~limit:2 |> ok in
@@ -58,6 +64,15 @@ let () =
       let raw = Sqlite3.db_open path in
       Fun.protect ~finally:(fun () -> ignore (Sqlite3.db_close raw)) (fun () ->
         let index = Oonnxx_sqlite3.attach ~model_id:"e5-test-v1" raw |> ok in
+        check (Sqlite3.exec raw "BEGIN IMMEDIATE" = Sqlite3.Rc.OK) "outer transaction begins";
+        ignore (Oonnxx_sqlite3.attach ~model_id:"e5-test-v1" raw |> ok);
+        Oonnxx_sqlite3.upsert index ~id:"rolled-back" ~text:"temporary"
+          ~vector:[| 0.8; 0.2 |] |> ok;
+        Oonnxx_sqlite3.rebuild_ann index ~nbucket:2 ~training_limit:16 |> ok;
+        check (Sqlite3.exec raw "ROLLBACK" = Sqlite3.Rc.OK) "outer transaction rolls back";
+        check (not (List.mem_assoc "rolled-back"
+          (Oonnxx_sqlite3.search_vector index ~query:[| 1.; 0. |] ~limit:20 |> ok)))
+          "nested upsert follows caller rollback";
         Oonnxx_sqlite3.upsert index ~id:"raw" ~text:"raw sqlite connection"
           ~vector:[| 0.8; 0.2 |] |> ok;
         check (List.mem_assoc "raw"

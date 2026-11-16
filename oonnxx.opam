@@ -18,6 +18,7 @@ depends: [
   "caqti-driver-sqlite3"
   "sqlite3"
   "ocamlfind"
+  "conf-pkg-config" {build}
   "eio"
   "eio_main" {with-test}
   "uri" {with-test}

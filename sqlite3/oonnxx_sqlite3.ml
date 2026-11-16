@@ -39,20 +39,23 @@ let first db sql args f =
     | rc -> Error (sql_error db rc))
 
 let transaction db f =
-  let* () = run db "BEGIN IMMEDIATE" [] in
+  let* () = run db "SAVEPOINT oonnxx_tx" [] in
   try
     match f () with
     | Ok result ->
-        (match run db "COMMIT" [] with
+        (match run db "RELEASE SAVEPOINT oonnxx_tx" [] with
          | Ok () -> Ok result
          | Error error ->
-             ignore (run db "ROLLBACK" []);
+             ignore (run db "ROLLBACK TO SAVEPOINT oonnxx_tx" []);
+             ignore (run db "RELEASE SAVEPOINT oonnxx_tx" []);
              Error error)
     | Error error ->
-        ignore (run db "ROLLBACK" []);
+        ignore (run db "ROLLBACK TO SAVEPOINT oonnxx_tx" []);
+        ignore (run db "RELEASE SAVEPOINT oonnxx_tx" []);
         Error error
   with error ->
-    ignore (run db "ROLLBACK" []);
+    ignore (run db "ROLLBACK TO SAVEPOINT oonnxx_tx" []);
+    ignore (run db "RELEASE SAVEPOINT oonnxx_tx" []);
     raise error
 
 let extension_path () =
@@ -61,18 +64,27 @@ let extension_path () =
   | _ -> Filename.concat (Findlib.package_directory "oonnxx") "vec1.so"
 
 let load_vec1 db =
-  let path = extension_path () in
-  if not (Sys.file_exists path) then
-    Error ("Oonnxx_sqlite3: Vec1 extension not found: " ^ path)
-  else if not (Sqlite3.enable_load_extension db true) then
-    Error "Oonnxx_sqlite3: cannot enable SQLite extension loading"
+  if Sqlite3.sqlite_version () < 3038000 then
+    Error "Oonnxx_sqlite3: SQLite 3.38.0 or newer is required for Vec1"
   else
-    Fun.protect ~finally:(fun () -> ignore (Sqlite3.enable_load_extension db false))
-      (fun () ->
-        let quoted = String.concat "''" (String.split_on_char '\'' path) in
-        match Sqlite3.exec db ("SELECT load_extension('" ^ quoted ^ "')") with
-        | Sqlite3.Rc.OK -> Ok ()
-        | rc -> Error ("Oonnxx_sqlite3: cannot load Vec1: " ^ sql_error db rc))
+    match (try first db "SELECT vec1_info()" []
+                 (fun stmt -> Sqlite3.column_text stmt 0)
+           with Sqlite3.Error _ -> Error "Vec1 is not loaded") with
+    | Ok (Some info) when String.starts_with ~prefix:"version 0.8" info -> Ok ()
+    | Ok (Some info) -> Error ("Oonnxx_sqlite3: incompatible Vec1 extension: " ^ info)
+    | _ ->
+        let path = extension_path () in
+        if not (Sys.file_exists path) then
+          Error ("Oonnxx_sqlite3: Vec1 extension not found: " ^ path)
+        else if not (Sqlite3.enable_load_extension db true) then
+          Error "Oonnxx_sqlite3: cannot enable SQLite extension loading"
+        else
+          Fun.protect ~finally:(fun () -> ignore (Sqlite3.enable_load_extension db false))
+            (fun () ->
+              let quoted = String.concat "''" (String.split_on_char '\'' path) in
+              match Sqlite3.exec db ("SELECT load_extension('" ^ quoted ^ "')") with
+              | Sqlite3.Rc.OK -> Ok ()
+              | rc -> Error ("Oonnxx_sqlite3: cannot load Vec1: " ^ sql_error db rc))
 
 let schema =
   [ "CREATE TABLE IF NOT EXISTS oonnxx_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)";
@@ -210,12 +222,16 @@ let search_vector ?(exact = false) ?(nprobe = 0.05) t ~query ~limit =
   if exact then search_vector_exact t ~query ~limit
   else
     guard (fun () ->
+      let* mode = metadata t.db "ann_mode" in
+      if mode = None then search_vector_exact t ~query ~limit
+      else if mode <> Some "ivf" then Error "Oonnxx_sqlite3: unknown ANN mode"
+      else (
       if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
       if not (Float.is_finite nprobe) || nprobe <= 0. then
         invalid_arg "Oonnxx_sqlite3: nprobe must be positive and finite";
       validate_vector query;
       let* () = check_query_dimension t query in
-      let options = Printf.sprintf "{K:%d,nprobe:%.17g}" limit nprobe in
+      let options = Printf.sprintf "{\"K\":%d,\"nprobe\":%.17g}" limit nprobe in
       let* reversed =
         fold t.db
           "SELECT d.id, 1.0-v.distance FROM oonnxx_vec1(?,?) v JOIN oonnxx_documents d ON d.rowid=v.rowid ORDER BY v.distance, d.id LIMIT ?"
@@ -223,7 +239,7 @@ let search_vector ?(exact = false) ?(nprobe = 0.05) t ~query ~limit =
             Sqlite3.Data.TEXT options; Sqlite3.Data.INT (Int64.of_int limit) ]
           [] (fun acc stmt ->
             (Sqlite3.column_text stmt 0, Sqlite3.column_double stmt 1) :: acc) in
-      Ok (List.rev reversed))
+      Ok (List.rev reversed)))
 
 let rebuild_ann ?(threads = 1) t ~nbucket ~training_limit =
   guard (fun () ->
@@ -237,7 +253,7 @@ let rebuild_ann ?(threads = 1) t ~nbucket ~training_limit =
         [ Sqlite3.Data.INT (Int64.of_int threads) ]
         (fun stmt -> Sqlite3.column_text stmt 0) in
     let options =
-      Printf.sprintf "{nbucket:%d,distance:\"cos\",quantizer:\"none\",codesize:0}"
+      Printf.sprintf "{\"nbucket\":%d,\"distance\":\"cos\",\"quantizer\":\"none\",\"codesize\":0}"
         nbucket in
     let* model =
       first t.db

@@ -6,7 +6,10 @@
 (rule
  (target vec1.so)
  (deps vendor/vec1.c)
- (action (run %{cc} -O3 -DNDEBUG -fPIC -shared %{dep:vendor/vec1.c} -o %{target})))
+ (action
+  (progn
+   (run pkg-config --atleast-version=3.38.0 sqlite3)
+   (run %{cc} -O3 -DNDEBUG -Werror=implicit-function-declaration -fPIC -shared %{dep:vendor/vec1.c} -o %{target} -lm -pthread))))
 
 (install
  (section lib)
