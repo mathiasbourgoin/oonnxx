@@ -1,51 +1,62 @@
 # Oonnxx
 
-Oonnxx is an OCaml library for local multilingual E5 embeddings. It runs a model through ONNX Runtime's C API, tokenizes with an OCaml implementation of the model's SentencePiece Unigram vocabulary, mean-pools the hidden states, and returns L2-normalized vectors. It also offers cosine ranking, reciprocal rank fusion, and little-endian float32 blobs suitable for a SQLite `BLOB` column.
+Oonnxx helps OCaml applications build **semantic indexes in SQLite**: store text passages with their embeddings, then retrieve passages by meaning, by keyword, or with both rankings combined. A query in English can retrieve a relevant passage in French. The library computes multilingual E5 embeddings locally through ONNX Runtime and connects directly to an existing Caqti SQLite connection.
 
-## Status
+## Install and supply a model
 
-Version 0.1.0 was tested on Linux x86-64 with ONNX Runtime 1.23.2 and `intfloat/multilingual-e5-small`'s `model_O4.onnx` and `tokenizer.json`. The tokenizer matches the Hugging Face tokenizers implementation on the French and English cases in `test/test_oonnxx.ml`. The current normalizer implements Unicode NFKC and the whitespace behavior exercised by those cases; the model's complete precompiled normalization table is not yet decoded, so other scripts and unusual Unicode may differ. Validate new scripts and unusual Unicode before relying on exact token parity.
-
-The library contains OCaml and a small C binding for ONNX Runtime. There is no C++, Python, Ollama, or GPU implementation in the product. Any future GPU code should use Sarek.
-
-## Build
-
-The package builds without ONNX Runtime installed. At run time, provide ONNX Runtime 1.23.2's shared library. Oonnxx loads `libonnxruntime.so` from the normal linker path, or the file named by `ONNXRUNTIME_LIBRARY`. The source includes ONNX Runtime's MIT-licensed C headers under `lib/vendor/` so opam can build the binding without system headers.
+Oonnxx currently supports Linux and builds without ONNX Runtime installed:
 
 ```sh
 opam pin add oonnxx .
 ```
 
-The opam package installs OCaml dependencies `yojson`, `uutf`, `uunf`, `caqti`, `caqti-driver-sqlite3`, and `eio`. ONNX Runtime is a runtime dependency; opam does not download a model or runtime binary. `Oonnxx.open_model` returns an error if the shared library is unavailable.
+At run time, supply ONNX Runtime 1.23.2's `libonnxruntime.so` on the linker path or set `ONNXRUNTIME_LIBRARY` to its path. Also download these matching files from the model author:
 
-## Model assets
+- [`model_O4.onnx`](https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/onnx/model_O4.onnx) — tested SHA-256 `4654c156f3e4171abc9c716cdb771bf9116455d15ac1aab364aeeede0e3205b0`
+- [`tokenizer.json`](https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokenizer.json) — tested SHA-256 `0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39`
 
-Download the matching files from the model author:
+The model and runtime binaries are supplied separately; opam does not download them. Check the asset hashes because the URLs follow a movable branch. `Oonnxx.open_model` raises an exception if it cannot load the model, tokenizer, or runtime.
 
-- `https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/onnx/model_O4.onnx` (tested SHA-256 `4654c156f3e4171abc9c716cdb771bf9116455d15ac1aab364aeeede0e3205b0`)
-- `https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokenizer.json` (tested SHA-256 `0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39`)
+## Index passages and search
 
-The assets are intentionally outside the Git repository. Check their hashes when reproducing the tests, because the URLs point to a movable branch.
-
-## Use
+This example assumes an existing `Caqti_blocking.CONNECTION` to SQLite and the model files at the paths shown. Add `oonnxx`, `oonnxx.caqti`, and your Caqti SQLite driver to the application's Dune dependencies.
 
 ```ocaml
-let engine = Oonnxx.open_model ~model:"model_O4.onnx" ~tokenizer:"tokenizer.json" in
-let query = Oonnxx.embed_query engine "black cat" in
-let passage = Oonnxx.embed_passage engine "un chat noir" in
-let score = Oonnxx.cosine query passage in
-let blob = Oonnxx.encode_f32le passage in
-let restored = Oonnxx.decode_f32le blob in
-ignore (score, restored)
+let engine =
+  Oonnxx.open_model ~model:"model_O4.onnx" ~tokenizer:"tokenizer.json"
+
+let index =
+  Oonnxx_caqti.attach
+    ~model_id:"e5-small-o4:<model-sha256>:<tokenizer-sha256>" conn
+  |> Result.get_ok
+
+let () =
+  Oonnxx_caqti.upsert index ~id:"passage-1" ~text:"un chat noir"
+    ~vector:(Oonnxx.embed_passage engine "un chat noir")
+  |> Result.get_ok
+
+let matches =
+  Oonnxx_caqti.search_hybrid index ~text:"black cat"
+    ~vector:(Oonnxx.embed_query engine "black cat") ~limit:10
+  |> Result.get_ok
+(* matches : (passage_id * fused_score) list *)
 ```
 
-`Oonnxx_caqti.attach ~model_id` takes the consumer's existing `Caqti_blocking.CONNECTION`, creates the `oonnxx_documents` and FTS5 tables, and provides `upsert`, `delete`, `search_fts`, `search_vector`, and `search_hybrid`. Use a stable ID incorporating the exact model and tokenizer hashes; a mismatched ID is refused on reopen. `search_vector` streams rows, keeping only the requested top results in memory; it still scans all stored vectors. Use `oonnxx.caqti` as a Dune library dependency.
+Replace the placeholders in `model_id` with the hashes of the exact model and tokenizer files used to create the index. The adapter records this ID and the vector dimension, and refuses to mix incompatible embeddings. `upsert` updates both the stored vector and the SQLite FTS5 text index; `delete` removes both. The caller owns and closes the Caqti connection.
 
-For an application with an existing Caqti connection, derive a stable ID for each indexed passage and call `upsert` after the passage transaction commits. Call `delete` when a passage is removed. The adapter's tables are independent of the application's schema. Its blocking connection must remain on the thread that created it, as required by Caqti's blocking API.
+`search_vector` ranks by cosine similarity; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. The returned scores from the three search methods have different meanings and should not be compared across methods. The adapter uses its own tables and does not change other application tables.
 
-`Oonnxx_eio.embed_passages` runs independent embeddings on Eio domains with a caller-selected concurrency limit. Use `oonnxx.eio` as a Dune library dependency. Split large files into passages before calling it: one embedding input is limited to 16 KiB and at most 510 body tokens. This is CPU parallelism; it is not an ONNX batch tensor and makes no throughput claim without a workload measurement.
+For large inputs, split files into passages and give each passage a stable ID. Inputs above 16 KiB are rejected, and tokenization keeps at most 510 body tokens per passage. `Oonnxx_eio.embed_passages` embeds independent passages on Eio domains with a caller-selected concurrency limit and preserves input order; add `oonnxx.eio` to the Dune dependencies.
 
-## Test
+## Current limits
+
+Version 0.1.0 was tested on Linux x86-64 with ONNX Runtime 1.23.2 and the model files above. The tokenizer matches the Hugging Face implementation on the French and English cases in `test/test_oonnxx.ml`. It implements Unicode NFKC and the whitespace behavior exercised by those cases, but does not decode the model's complete precompiled normalization table. Validate other scripts and unusual Unicode before relying on exact token parity.
+
+Vector search scans every stored vector, retaining only the requested best results in memory. The Eio helper provides CPU parallelism across passages; it does not batch inputs into one ONNX tensor. Measure throughput with your workload before choosing passage size and concurrency.
+
+The implementation uses OCaml and a small C binding to ONNX Runtime's C API. Its MIT-licensed C headers are included under `lib/vendor/` so package builds need no system ONNX Runtime headers.
+
+## Run the tests
 
 ```sh
 ONNXRUNTIME_LIBRARY=/path/to/libonnxruntime.so \
