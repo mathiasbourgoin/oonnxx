@@ -1,0 +1,4 @@
+(library
+ (name oonnxx_caqti)
+ (public_name oonnxx.caqti)
+ (libraries oonnxx caqti caqti.classic caqti.blocking caqti-driver-sqlite3))

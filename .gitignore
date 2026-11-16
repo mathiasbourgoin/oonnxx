@@ -1,0 +1,7 @@
+_build/
+*.install
+test/fixtures/
+briefs/*-xruntime.jsonl
+briefs/*-gate-report.json
+briefs/*-state.json
+briefs/*.json.draft

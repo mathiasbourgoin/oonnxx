@@ -1,0 +1,11 @@
+(test
+ (name test_oonnxx)
+ (libraries oonnxx))
+
+(test
+ (name test_caqti)
+ (libraries oonnxx oonnxx.caqti caqti.blocking caqti-driver-sqlite3 uri unix))
+
+(test
+ (name test_eio)
+ (libraries oonnxx oonnxx.eio eio_main))

@@ -1,0 +1,12 @@
+(library
+ (name oonnxx)
+ (public_name oonnxx)
+ (modules oonnxx tokenizer)
+ (libraries yojson uutf uunf)
+ (foreign_stubs
+  (language c)
+  (names onnx_stubs)
+  (flags (:standard -I%{env:ONNXRUNTIME_ROOT=/usr}/include)))
+ (c_library_flags
+  -L%{env:ONNXRUNTIME_ROOT=/usr}/lib
+  -lonnxruntime))

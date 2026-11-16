@@ -1,0 +1,4 @@
+(library
+ (name oonnxx_eio)
+ (public_name oonnxx.eio)
+ (libraries oonnxx eio))
