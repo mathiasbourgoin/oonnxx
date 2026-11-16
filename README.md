@@ -56,6 +56,10 @@ Vector search scans every stored vector, retaining only the requested best resul
 
 The implementation uses OCaml and a small C binding to ONNX Runtime's C API. Its MIT-licensed C headers are included under `lib/vendor/` so package builds need no system ONNX Runtime headers.
 
+## License
+
+Oonnxx is licensed under the MIT License. See [LICENSE](LICENSE). The vendored ONNX Runtime C headers retain their own [MIT license notice](lib/vendor/ONNXRUNTIME-LICENSE).
+
 ## Run the tests
 
 ```sh
