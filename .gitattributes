@@ -1,0 +1,3 @@
+.harness/** linguist-vendored
+lib/vendor/** linguist-vendored
+sqlite3/vendor/** linguist-vendored
