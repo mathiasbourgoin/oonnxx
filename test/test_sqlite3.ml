@@ -154,9 +154,90 @@ let blank_fts_query_returns_nothing () =
           failwith (Printf.sprintf "search_fts %S failed: %s" query error))
       [ ""; " "; "\t\n " ])
 
+(* Exact-search scores must equal [Oonnxx.cosine] bit for bit on the stored
+   float32 vectors, whatever their norm, and rows that [Oonnxx.cosine] rejects
+   must give the same error. Zero and non-finite rows are written with raw SQL
+   because [upsert] refuses them, and without the Vec1 trigger because Vec1
+   refuses non-finite values: such rows can only come from outside Oonnxx. *)
+let reference_scores ~query rows =
+  try
+    Ok (List.map (fun (id, vector) ->
+      (id, Oonnxx.cosine query (Oonnxx.decode_f32le (Oonnxx.encode_f32le vector))))
+      rows
+      |> List.sort (fun (a, x) (b, y) ->
+           let order = Float.compare y x in
+           if order = 0 then String.compare a b else order))
+  with Invalid_argument _ as error -> Error (Printexc.to_string error)
+
+let insert_raw db id vector =
+  check (Sqlite3.exec db "DROP TRIGGER oonnxx_ai" = Sqlite3.Rc.OK) "drop trigger";
+  let stmt =
+    Sqlite3.prepare db
+      "INSERT INTO oonnxx_documents(id,text,embedding,dimension) VALUES (?,'raw',?,?)" in
+  Fun.protect ~finally:(fun () -> ignore (Sqlite3.finalize stmt)) (fun () ->
+    ignore (Sqlite3.bind_values stmt
+      [ Sqlite3.Data.TEXT id; Sqlite3.Data.BLOB (Oonnxx.encode_f32le vector);
+        Sqlite3.Data.INT (Int64.of_int (Array.length vector)) ]);
+    let rc = Sqlite3.step stmt in
+    if rc <> Sqlite3.Rc.DONE then
+      failwith ("raw insert: " ^ Sqlite3.Rc.to_string rc ^ " " ^ Sqlite3.errmsg db))
+
+let exact_scores_match_cosine () =
+  let rejected = ref 0 in
+  List.iter (fun seed ->
+    let state = Random.State.make [| 1000 + seed |] in
+    let dimension = 2 + Random.State.int state 12 in
+    let magnitude () =
+      match Random.State.int state 4 with
+      | 0 -> 1e-30 | 1 -> 1e30 | 2 -> 10. | _ -> 1. in
+    let vector () =
+      let scale = magnitude () in
+      let rec draw () =
+        let v = Array.init dimension (fun _ ->
+          scale *. (Random.State.float state 2. -. 1.)) in
+        if Array.exists (fun x -> Int32.float_of_bits (Int32.bits_of_float x) <> 0.) v
+        then v else draw () in
+      draw () in
+    let rows = List.init (1 + Random.State.int state 200) (fun i ->
+      (Printf.sprintf "r%03d" i, vector ())) in
+    let poison =
+      match seed mod 4 with
+      | 0 -> Some ("zero", Array.make dimension 0.)
+      | 1 -> Some ("nan", Array.init dimension (fun i -> if i = 0 then nan else 1.))
+      | 2 -> Some ("inf", Array.init dimension (fun i -> if i = 0 then infinity else 1.))
+      | _ -> None in
+    let db = Sqlite3.db_open ":memory:" in
+    Fun.protect ~finally:(fun () -> ignore (Sqlite3.db_close db)) (fun () ->
+      let index = Oonnxx_sqlite3.attach ~model_id:"test-model" db |> ok in
+      Oonnxx_sqlite3.upsert_many index
+        (List.map (fun (id, v) -> (id, "text", v)) rows) |> ok;
+      Option.iter (fun (id, v) -> insert_raw db id v) poison;
+      let all_rows = rows @ Option.to_list poison in
+      let query = vector () in
+      let expected = reference_scores ~query all_rows in
+      if Result.is_error expected then incr rejected;
+      let actual =
+        Oonnxx_sqlite3.search_vector ~exact:true index ~query ~limit:max_int in
+      if actual <> expected then
+        failwith (Printf.sprintf
+          "exact scores differ from Oonnxx.cosine (seed %d, dimension %d): %s"
+          seed dimension
+          (match actual, expected with
+           | Error a, Error e -> a ^ " vs " ^ e
+           | Error a, Ok _ -> "error " ^ a
+           | Ok _, Error e -> "expected error " ^ e
+           | Ok a, Ok e ->
+               let diff = List.filter (fun (x, y) -> x <> y) (List.combine a e) in
+               (match diff with
+                | ((id, x), (_, y)) :: _ -> Printf.sprintf "%s %h vs %h" id x y
+                | [] -> "order")))))
+    (List.init 24 Fun.id);
+  check (!rejected = 18) "zero and non-finite rows are rejected"
+
 let () =
   literal_fts_query_contract ();
   literal_fts_query_is_literal ();
   blank_fts_query_returns_nothing ();
   exact_search_matches_full_sort ();
+  exact_scores_match_cosine ();
   exact_search_full_depth_is_not_quadratic ()

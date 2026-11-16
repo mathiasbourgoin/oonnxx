@@ -266,21 +266,47 @@ module Top_k = struct
     Array.to_list items
 end
 
+let squared_norm vector =
+  let sum = ref 0. in
+  for i = 0 to Array.length vector - 1 do
+    sum := !sum +. (vector.(i) *. vector.(i))
+  done;
+  !sum
+
+(* [Oonnxx.cosine query (Oonnxx.decode_f32le blob)], bit for bit and with the
+   same errors, without decoding the blob into an array. The sums follow the
+   same order; [query_norm] is the query's squared norm, computed once. A
+   float32 square cannot overflow a double sum, so a non-finite row sum means
+   a non-finite element. The blob holds [Array.length query] floats. *)
+let cosine_f32le ~query ~query_norm blob =
+  let dot = ref 0. and norm = ref 0. in
+  for i = 0 to Array.length query - 1 do
+    let x = Int32.float_of_bits (String.get_int32_le blob (4 * i)) in
+    dot := !dot +. (query.(i) *. x);
+    norm := !norm +. (x *. x)
+  done;
+  if not (Float.is_finite !norm) then invalid_arg "Oonnxx.cosine: nonfinite vector";
+  if query_norm <= 0. || !norm <= 0. then invalid_arg "Oonnxx.cosine: zero vector";
+  !dot /. sqrt (query_norm *. !norm)
+
 let search_vector_exact t ~query ~limit =
   guard (fun () ->
     if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
     validate_vector query;
     let* () = check_query_dimension t query in
+    let query_norm = squared_norm query in
     let best = Top_k.create limit in
     let* () =
       fold t.db "SELECT id, embedding, dimension FROM oonnxx_documents" [] ()
         (fun () stmt ->
           let id = Sqlite3.column_text stmt 0 in
-          let vector = Oonnxx.decode_f32le (Sqlite3.column_blob stmt 1) in
-          if Array.length vector <> Sqlite3.column_int stmt 2 ||
-             Array.length vector <> Array.length query then
+          let blob = Sqlite3.column_blob stmt 1 in
+          if String.length blob mod 4 <> 0 then
+            invalid_arg "Oonnxx.decode_f32le: invalid blob length";
+          let length = String.length blob / 4 in
+          if length <> Sqlite3.column_int stmt 2 || length <> Array.length query then
             failwith ("Oonnxx_sqlite3: inconsistent vector dimension for " ^ id);
-          Top_k.add best (id, Oonnxx.cosine query vector)) in
+          Top_k.add best (id, cosine_f32le ~query ~query_norm blob)) in
     Ok (Top_k.to_sorted_list best))
 
 let search_vector ?(exact = false) ?(nprobe = 0.05) t ~query ~limit =
