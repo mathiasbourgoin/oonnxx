@@ -70,10 +70,7 @@ CAMLprim value oonnxx_ort_open(value path, value threads) {
   raise_status(api, api->CreateSessionOptions(&options));
   int thread_count = Int_val(threads);
   OrtStatus *status = NULL;
-  if (thread_count > 0) {
-    status = api->SetIntraOpNumThreads(options, thread_count);
-    if (!status) status = api->SetInterOpNumThreads(options, thread_count);
-  }
+  if (thread_count > 0) status = api->SetIntraOpNumThreads(options, thread_count);
   if (!status)
     status = api->CreateSession(s->env, String_val(path), options, &s->session);
   api->ReleaseSessionOptions(options);

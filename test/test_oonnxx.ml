@@ -21,21 +21,28 @@ let check_thread_option ~model ~tokenizer =
     try ignore (Oonnxx.open_model_with ~threads ~model ~tokenizer ());
       failwith (Printf.sprintf "threads:%d accepted" threads)
     with Invalid_argument _ -> ())
-    [ 0; -1; 0x8000_0000 ];
+    [ 0; -1; 1025; 100_000; 0x8000_0000 ];
   let single = Oonnxx.open_model_with ~threads:1 ~model ~tokenizer () in
   ignore (cores_used single);
   let single_cores, single_vectors = cores_used single in
-  let default = Oonnxx.open_model ~model ~tokenizer in
-  ignore (cores_used default);
-  let default_cores, default_vectors = cores_used default in
-  Printf.printf "cores used: threads:1 %.2f, default %.2f\n%!" single_cores
-    default_cores;
+  Printf.printf "cores used: threads:1 %.2f\n%!" single_cores;
   check (single_cores <= 1.5) "threads:1 uses at most about one core";
-  check (default_cores > single_cores +. 0.5)
-    "default thread pool uses more cores than threads:1";
-  List.iter2 (fun a b ->
-    check (Oonnxx.cosine a b > 0.99999) "embedding depends on thread count")
-    single_vectors default_vectors
+  let wide = Oonnxx.open_model_with ~threads:200 ~model ~tokenizer () in
+  let text = List.hd passages in
+  check (Oonnxx.cosine (Oonnxx.embed_passage wide text) (List.hd single_vectors)
+         > 0.99999) "threads:200 embedding matches threads:1";
+  if Domain.recommended_domain_count () < 4 then
+    print_endline "skip: default-pool core comparison needs at least 4 cores"
+  else (
+    let default = Oonnxx.open_model ~model ~tokenizer in
+    ignore (cores_used default);
+    let default_cores, default_vectors = cores_used default in
+    Printf.printf "cores used: default %.2f\n%!" default_cores;
+    check (default_cores > single_cores +. 0.5)
+      "default thread pool uses more cores than threads:1";
+    List.iter2 (fun a b ->
+      check (Oonnxx.cosine a b > 0.99999) "embedding depends on thread count")
+      single_vectors default_vectors)
 
 let () =
   let a = [| 1.; 0. |] and b = [| 0.; 1. |] in

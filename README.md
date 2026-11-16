@@ -17,7 +17,7 @@ At run time, supply ONNX Runtime 1.23.2's `libonnxruntime.so` on the linker path
 
 The model and runtime binaries are supplied separately; opam does not download them. Check the asset hashes because the URLs follow a movable branch. `Oonnxx.open_model` raises an exception if it cannot load the model, tokenizer, or runtime.
 
-By default ONNX Runtime sizes its thread pool to the machine and its threads spin while waiting, so a single embedding call can occupy every core. Use `Oonnxx.open_model_with ~threads:1 ~model ~tokenizer ()` to run each inference on the calling thread, or another positive count to bound the pool; it sets both the intra-op and inter-op thread counts. Combine `~threads:1` with `Oonnxx_eio.embed_passages` to choose the parallelism with `max_fibers` instead.
+By default ONNX Runtime sizes its thread pool to the machine and its threads spin while waiting, so a single embedding call can occupy every core. Use `Oonnxx.open_model_with ~threads:1 ~model ~tokenizer ()` to run each inference on the calling thread, or a count up to 1024 to bound the pool; it sets the session's intra-op thread count. Combine `~threads:1` with `Oonnxx_eio.embed_passages` to choose the parallelism with `max_fibers` instead. Oonnxx does not expose ONNX Runtime's `session.intra_op.allow_spinning` session option, which keeps the default pool but stops its idle spinning; on a loaded 32-thread machine with ONNX Runtime 1.23.2, setting it to `0` through the C API's `AddSessionConfigEntry` reduced the default pool's CPU use from about 24 cores to about 7.
 
 ## Index passages and search
 

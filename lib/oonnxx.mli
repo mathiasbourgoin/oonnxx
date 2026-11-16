@@ -8,12 +8,14 @@ val open_model : model:string -> tokenizer:string -> t
 
 val open_model_with :
   ?threads:int -> model:string -> tokenizer:string -> unit -> t
-(** Like [open_model], with ONNX Runtime options. [threads] sets both the
-    intra-op and inter-op thread counts of the session; [threads=1] runs each
-    inference on the calling thread. Without [threads], ONNX Runtime chooses
-    its defaults (an intra-op pool sized to the machine's cores, whose threads
-    spin while waiting). Raises [Invalid_argument] unless
-    [1 <= threads <= 2{^31} - 1]. *)
+(** Like [open_model], with ONNX Runtime options. [threads] sets the
+    session's intra-op thread count, the threads one inference may use;
+    [threads=1] runs each inference on the calling thread. Without
+    [threads], ONNX Runtime chooses its default (a pool sized to the
+    machine's cores, whose threads spin while waiting). Raises
+    [Invalid_argument] unless [1 <= threads <= 1024]; ONNX Runtime was seen
+    to hang or crash with much larger pools, and counts above the machine's
+    cores bring no speed-up. *)
 
 val tokenize : t -> string -> int array
 (** Return model input IDs including the E5 [<s>] and [</s>] tokens.

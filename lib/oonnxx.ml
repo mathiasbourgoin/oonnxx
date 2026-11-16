@@ -4,13 +4,15 @@ external runtime_run : runtime -> int array -> float array array = "oonnxx_ort_r
 
 type t = { runtime : runtime; tokenizer : Tokenizer.t }
 
+let max_threads = 1024
+
 let open_model_with ?threads ~model ~tokenizer () =
   let threads =
     match threads with
     | None -> 0
-    | Some count when count >= 1 && count <= 0x7fff_ffff -> count
+    | Some count when count >= 1 && count <= max_threads -> count
     | Some _ ->
-        invalid_arg "Oonnxx.open_model_with: threads must be between 1 and 2^31 - 1" in
+        invalid_arg "Oonnxx.open_model_with: threads must be between 1 and 1024" in
   let tokenizer = Tokenizer.load tokenizer in
   let runtime = runtime_open model threads in
   { runtime; tokenizer }
