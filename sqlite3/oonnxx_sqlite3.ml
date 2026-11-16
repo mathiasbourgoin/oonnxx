@@ -182,9 +182,16 @@ let delete t ~id =
     let* () = require_writable t in
     run t.db "DELETE FROM oonnxx_documents WHERE id=?" [ Sqlite3.Data.TEXT id ])
 
+(* ASCII whitespace and NUL. SQLite stops reading a query string at a NUL
+   byte, so a NUL inside a quoted word would leave it unterminated. *)
+let is_query_separator = function
+  | ' ' | '\t' | '\n' | '\011' | '\012' | '\r' | '\000' -> true
+  | _ -> false
+
 let search_fts t ~query ~limit =
   guard (fun () ->
     if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
+    if String.for_all is_query_separator query then Ok [] else
     let* reversed =
       fold t.db
         "SELECT d.id FROM oonnxx_fts JOIN oonnxx_documents d ON d.rowid=oonnxx_fts.rowid WHERE oonnxx_fts MATCH ? ORDER BY bm25(oonnxx_fts), d.id LIMIT ?"
@@ -199,24 +206,108 @@ let check_query_dimension t query =
   | Some value when value = string_of_int (Array.length query) -> Ok ()
   | Some _ -> Error "Oonnxx_sqlite3: query dimension differs from index"
 
+(* Result order: descending score, then ascending id. Ids are unique, so the
+   order is total and the selected set does not depend on scan order. *)
+let compare_ranked (id_a, a) (id_b, b) =
+  let order = Float.compare b a in
+  if order = 0 then String.compare id_a id_b else order
+
+(* Bounded selection of the [limit] best entries in O(n log limit): a binary
+   heap whose root is the worst entry kept. Storage grows with the number of
+   entries kept, never with [limit] itself. *)
+module Top_k = struct
+  type t = { limit : int; mutable items : (string * float) array; mutable size : int }
+
+  let create limit = { limit; items = [||]; size = 0 }
+
+  (* [worse a b]: [a] ranks after [b], so it belongs nearer the root. *)
+  let worse a b = compare_ranked a b > 0
+
+  let swap heap i j =
+    let item = heap.items.(i) in
+    heap.items.(i) <- heap.items.(j);
+    heap.items.(j) <- item
+
+  let rec sift_up heap i =
+    let parent = (i - 1) / 2 in
+    if i > 0 && worse heap.items.(i) heap.items.(parent) then (
+      swap heap i parent;
+      sift_up heap parent)
+
+  let rec sift_down heap i =
+    let left = (2 * i) + 1 in
+    let right = left + 1 in
+    let target = ref i in
+    if left < heap.size && worse heap.items.(left) heap.items.(!target) then target := left;
+    if right < heap.size && worse heap.items.(right) heap.items.(!target) then target := right;
+    if !target <> i then (
+      swap heap i !target;
+      sift_down heap !target)
+
+  let push heap item =
+    if heap.size = Array.length heap.items then (
+      let capacity = min heap.limit (max 16 (2 * heap.size)) in
+      let items = Array.make capacity item in
+      Array.blit heap.items 0 items 0 heap.size;
+      heap.items <- items);
+    heap.items.(heap.size) <- item;
+    heap.size <- heap.size + 1;
+    sift_up heap (heap.size - 1)
+
+  let add heap item =
+    if heap.size < heap.limit then push heap item
+    else if worse heap.items.(0) item then (
+      heap.items.(0) <- item;
+      sift_down heap 0)
+
+  let to_sorted_list heap =
+    let items = Array.sub heap.items 0 heap.size in
+    Array.sort compare_ranked items;
+    Array.to_list items
+end
+
+let squared_norm vector =
+  let sum = ref 0. in
+  for i = 0 to Array.length vector - 1 do
+    sum := !sum +. (vector.(i) *. vector.(i))
+  done;
+  !sum
+
+(* [Oonnxx.cosine query (Oonnxx.decode_f32le blob)], bit for bit and with the
+   same errors, without decoding the blob into an array. The sums follow the
+   same order; [query_norm] is the query's squared norm, computed once. A
+   float32 square cannot overflow a double sum, so a non-finite row sum means
+   a non-finite element. The blob holds [Array.length query] floats. *)
+let cosine_f32le ~query ~query_norm blob =
+  let dot = ref 0. and norm = ref 0. in
+  for i = 0 to Array.length query - 1 do
+    let x = Int32.float_of_bits (String.get_int32_le blob (4 * i)) in
+    dot := !dot +. (query.(i) *. x);
+    norm := !norm +. (x *. x)
+  done;
+  if not (Float.is_finite !norm) then invalid_arg "Oonnxx.cosine: nonfinite vector";
+  if query_norm <= 0. || !norm <= 0. then invalid_arg "Oonnxx.cosine: zero vector";
+  !dot /. sqrt (query_norm *. !norm)
+
 let search_vector_exact t ~query ~limit =
   guard (fun () ->
     if limit <= 0 then invalid_arg "Oonnxx_sqlite3: limit must be positive";
     validate_vector query;
     let* () = check_query_dimension t query in
-    fold t.db "SELECT id, embedding, dimension FROM oonnxx_documents ORDER BY id" [] []
-      (fun best stmt ->
-        let id = Sqlite3.column_text stmt 0 in
-        let vector = Oonnxx.decode_f32le (Sqlite3.column_blob stmt 1) in
-        if Array.length vector <> Sqlite3.column_int stmt 2 ||
-           Array.length vector <> Array.length query then
-          failwith ("Oonnxx_sqlite3: inconsistent vector dimension for " ^ id);
-        let score = Oonnxx.cosine query vector in
-        (id, score) :: best
-        |> List.sort (fun (a, x) (b, y) ->
-             let order = Float.compare y x in
-             if order = 0 then String.compare a b else order)
-        |> List.filteri (fun index _ -> index < limit)))
+    let query_norm = squared_norm query in
+    let best = Top_k.create limit in
+    let* () =
+      fold t.db "SELECT id, embedding, dimension FROM oonnxx_documents" [] ()
+        (fun () stmt ->
+          let id = Sqlite3.column_text stmt 0 in
+          let blob = Sqlite3.column_blob stmt 1 in
+          if String.length blob mod 4 <> 0 then
+            invalid_arg "Oonnxx.decode_f32le: invalid blob length";
+          let length = String.length blob / 4 in
+          if length <> Sqlite3.column_int stmt 2 || length <> Array.length query then
+            failwith ("Oonnxx_sqlite3: inconsistent vector dimension for " ^ id);
+          Top_k.add best (id, cosine_f32le ~query ~query_norm blob)) in
+    Ok (Top_k.to_sorted_list best))
 
 let search_vector ?(exact = false) ?(nprobe = 0.05) t ~query ~limit =
   if exact then search_vector_exact t ~query ~limit
@@ -270,9 +361,8 @@ let rebuild_ann ?(threads = 1) t ~nbucket ~training_limit =
 
 let literal_fts_query text =
   let words =
-    String.split_on_char ' ' text
-    |> List.concat_map (String.split_on_char '\n')
-    |> List.concat_map (String.split_on_char '\t')
+    String.map (fun c -> if is_query_separator c then ' ' else c) text
+    |> String.split_on_char ' '
     |> List.filter (fun word ->
          String.exists (fun c ->
            let code = Char.code c in

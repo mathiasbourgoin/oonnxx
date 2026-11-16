@@ -1,6 +1,6 @@
 (test
  (name test_oonnxx)
- (libraries oonnxx))
+ (libraries oonnxx unix))
 
 (test
  (name test_caqti)
@@ -13,3 +13,11 @@
 (test
  (name test_eio)
  (libraries oonnxx oonnxx.eio eio_main))
+
+(test
+ (name test_sqlite3)
+ (libraries oonnxx oonnxx.sqlite3 oonnxx.caqti sqlite3 unix)
+ (deps ../sqlite3/vec1.so)
+ (action
+  (setenv OONNXX_VEC1_EXTENSION %{dep:../sqlite3/vec1.so}
+   (run %{test}))))

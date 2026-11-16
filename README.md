@@ -17,6 +17,8 @@ At run time, supply ONNX Runtime 1.23.2's `libonnxruntime.so` on the linker path
 
 The model and runtime binaries are supplied separately; opam does not download them. Check the asset hashes because the URLs follow a movable branch. `Oonnxx.open_model` raises an exception if it cannot load the model, tokenizer, or runtime.
 
+By default ONNX Runtime sizes its thread pool to the machine and its threads spin while waiting, so a single embedding call can occupy every core. Use `Oonnxx.open_model_with ~threads:1 ~model ~tokenizer ()` to run each inference on the calling thread, or a count up to 1024 to bound the pool; it sets the session's intra-op thread count. Combine `~threads:1` with `Oonnxx_eio.embed_passages` to choose the parallelism with `max_fibers` instead. Oonnxx does not expose ONNX Runtime's `session.intra_op.allow_spinning` session option, which keeps the default pool but stops its idle spinning; on a loaded 32-thread machine with ONNX Runtime 1.23.2, setting it to `0` through the C API's `AddSessionConfigEntry` reduced the default pool's CPU use from about 24 cores to about 7.
+
 ## Index passages and search
 
 Add `oonnxx`, `oonnxx.sqlite3`, and `sqlite3` to the application's Dune dependencies. This example opens a writable SQLite database and assumes the model files are at the paths shown:
@@ -51,7 +53,7 @@ The package installs `vec1.so` with the library and loads it for each attached S
 
 For an existing `Caqti_blocking.CONNECTION` using the SQLite3 driver, use `Oonnxx_caqti.attach ~model_id conn` instead and add `oonnxx.caqti` to the Dune dependencies. The Caqti facade exposes the same indexing, rebuild, and search functions. It uses the driver's underlying SQLite connection, so keep the blocking connection on the thread that created it.
 
-`search_vector` searches Vec1 by cosine distance; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. The returned scores from these methods have different meanings and should not be compared across methods. Oonnxx's tables are independent of other application tables.
+`search_vector` searches Vec1 by cosine distance; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. To give user input to `search_fts`, convert it with `literal_fts_query`, which quotes each word so FTS5 operators such as `AND`, `NOT`, and `*` are searched as text; it returns an empty string when the input has no searchable word, and `search_fts` returns no results for an empty query. The returned scores from these methods have different meanings and should not be compared across methods. Oonnxx's tables are independent of other application tables.
 
 ## Build and use the approximate index
 

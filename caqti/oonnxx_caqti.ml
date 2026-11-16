@@ -19,6 +19,7 @@ let upsert = Oonnxx_sqlite3.upsert
 let upsert_many = Oonnxx_sqlite3.upsert_many
 let delete = Oonnxx_sqlite3.delete
 let search_fts = Oonnxx_sqlite3.search_fts
+let literal_fts_query = Oonnxx_sqlite3.literal_fts_query
 let search_vector = Oonnxx_sqlite3.search_vector
 let rebuild_ann = Oonnxx_sqlite3.rebuild_ann
 let search_hybrid = Oonnxx_sqlite3.search_hybrid

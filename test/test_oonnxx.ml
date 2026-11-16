@@ -1,5 +1,49 @@
 let check condition message = if not condition then failwith message
 
+let passages =
+  List.init 24 (fun i ->
+    String.concat " "
+      (List.init 60 (fun j ->
+         Printf.sprintf "passage %d mot %d recherche sémantique locale" i j)))
+
+(* Process CPU time (all threads) divided by wall time over a batch. *)
+let cores_used engine =
+  let before = Unix.times () and started = Unix.gettimeofday () in
+  let vectors = List.map (Oonnxx.embed_passage engine) passages in
+  let after = Unix.times () and elapsed = Unix.gettimeofday () -. started in
+  let cpu =
+    after.Unix.tms_utime -. before.Unix.tms_utime
+    +. after.Unix.tms_stime -. before.Unix.tms_stime in
+  (cpu /. elapsed, vectors)
+
+let check_thread_option ~model ~tokenizer =
+  List.iter (fun threads ->
+    try ignore (Oonnxx.open_model_with ~threads ~model ~tokenizer ());
+      failwith (Printf.sprintf "threads:%d accepted" threads)
+    with Invalid_argument _ -> ())
+    [ 0; -1; 1025; 100_000; 0x8000_0000 ];
+  let single = Oonnxx.open_model_with ~threads:1 ~model ~tokenizer () in
+  ignore (cores_used single);
+  let single_cores, single_vectors = cores_used single in
+  Printf.printf "cores used: threads:1 %.2f\n%!" single_cores;
+  check (single_cores <= 1.5) "threads:1 uses at most about one core";
+  let wide = Oonnxx.open_model_with ~threads:200 ~model ~tokenizer () in
+  let text = List.hd passages in
+  check (Oonnxx.cosine (Oonnxx.embed_passage wide text) (List.hd single_vectors)
+         > 0.99999) "threads:200 embedding matches threads:1";
+  if Domain.recommended_domain_count () < 4 then
+    print_endline "skip: default-pool core comparison needs at least 4 cores"
+  else (
+    let default = Oonnxx.open_model ~model ~tokenizer in
+    ignore (cores_used default);
+    let default_cores, default_vectors = cores_used default in
+    Printf.printf "cores used: default %.2f\n%!" default_cores;
+    check (default_cores > single_cores +. 0.5)
+      "default thread pool uses more cores than threads:1";
+    List.iter2 (fun a b ->
+      check (Oonnxx.cosine a b > 0.99999) "embedding depends on thread count")
+      single_vectors default_vectors)
+
 let () =
   let a = [| 1.; 0. |] and b = [| 0.; 1. |] in
   check (Oonnxx.cosine a a > 0.9999) "identity cosine";
@@ -48,5 +92,6 @@ let () =
       let unrelated = Oonnxx.embed_passage engine "database schema migration" in
       check (Array.length query = 384) "E5 embedding dimensions";
       check (Oonnxx.cosine query related > Oonnxx.cosine query unrelated)
-        "English-to-French semantic ranking"
+        "English-to-French semantic ranking";
+      check_thread_option ~model ~tokenizer
   | _ -> ()
