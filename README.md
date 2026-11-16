@@ -4,7 +4,7 @@ Oonnxx is an OCaml library for local multilingual E5 embeddings. It runs a model
 
 ## Status
 
-Local v0.1 candidate. Tested on Linux x86-64 with ONNX Runtime 1.23.2 and `intfloat/multilingual-e5-small`'s `model_O4.onnx` and `tokenizer.json`. The tokenizer matches the Hugging Face tokenizers implementation on the French and English cases in `test/test_oonnxx.ml`. The current normalizer implements Unicode NFKC and the whitespace behavior exercised by those cases; the model's complete precompiled normalization table is not yet decoded, so other scripts and unusual Unicode may differ. Validate new scripts and unusual Unicode before relying on exact token parity.
+Version 0.1.0 was tested on Linux x86-64 with ONNX Runtime 1.23.2 and `intfloat/multilingual-e5-small`'s `model_O4.onnx` and `tokenizer.json`. The tokenizer matches the Hugging Face tokenizers implementation on the French and English cases in `test/test_oonnxx.ml`. The current normalizer implements Unicode NFKC and the whitespace behavior exercised by those cases; the model's complete precompiled normalization table is not yet decoded, so other scripts and unusual Unicode may differ. Validate new scripts and unusual Unicode before relying on exact token parity.
 
 The library contains OCaml and a small C binding for ONNX Runtime. There is no C++, Python, Ollama, or GPU implementation in the product. Any future GPU code should use Sarek.
 
@@ -41,7 +41,7 @@ ignore (score, restored)
 
 `Oonnxx_caqti.attach ~model_id` takes the consumer's existing `Caqti_blocking.CONNECTION`, creates the `oonnxx_documents` and FTS5 tables, and provides `upsert`, `delete`, `search_fts`, `search_vector`, and `search_hybrid`. Use a stable ID incorporating the exact model and tokenizer hashes; a mismatched ID is refused on reopen. `search_vector` streams rows, keeping only the requested top results in memory; it still scans all stored vectors. Use `oonnxx.caqti` as a Dune library dependency.
 
-For Session Mesh, use the existing history database connection, derive a stable document ID from each history chunk, and call `upsert` after the chunk transaction commits. Call `delete` when a chunk is removed. The adapter's tables are independent of the history schema, so it does not alter the history migration state. Its blocking connection must remain on the thread that created it, as required by Caqti's blocking API.
+For an application with an existing Caqti connection, derive a stable ID for each indexed passage and call `upsert` after the passage transaction commits. Call `delete` when a passage is removed. The adapter's tables are independent of the application's schema. Its blocking connection must remain on the thread that created it, as required by Caqti's blocking API.
 
 `Oonnxx_eio.embed_passages` runs independent embeddings on Eio domains with a caller-selected concurrency limit. Use `oonnxx.eio` as a Dune library dependency. Split large files into passages before calling it: one embedding input is limited to 16 KiB and at most 510 body tokens. This is CPU parallelism; it is not an ONNX batch tensor and makes no throughput claim without a workload measurement.
 

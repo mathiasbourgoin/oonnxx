@@ -7,12 +7,11 @@
 
 ## Goal
 
-Create a separate OCaml library named Oonnxx that computes local French and English embeddings with a multilingual E5 ONNX model, and provides vector retrieval primitives for session-mesh history search.
+Create an OCaml library named Oonnxx that computes local French and English embeddings with a multilingual E5 ONNX model and provides vector retrieval primitives for indexed passages.
 
 ## Scope Boundary
 
-- No product integration into session-mesh yet.
-- No public repository or public push.
+- Keep integration with consumers outside this library.
 - No Ollama or Python runtime dependency.
 - The model files remain external assets supplied by the caller.
 
