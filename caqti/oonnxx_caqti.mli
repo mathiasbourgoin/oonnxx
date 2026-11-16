@@ -18,6 +18,17 @@ val delete : t -> id:string -> (unit, string) result
 val search_fts : t -> query:string -> limit:int -> (string list, string) result
 (** Search text with SQLite FTS5 query syntax. *)
 
+val literal_fts_query : string -> string
+(** Turn user text into an FTS5 query that matches its words literally, for
+    [search_fts]. The text is split on spaces, tabs, and newlines. Words
+    without an ASCII letter, ASCII digit, or non-ASCII byte are dropped. Each
+    remaining word becomes an FTS5 string (double quotes doubled), so FTS5
+    operators ([AND], [OR], [NOT], [NEAR]), prefix [*], column filters, and
+    parentheses are searched as text; the strings are joined with [OR].
+    Returns [""] when no word remains; FTS5 rejects an empty query, so do not
+    pass [""] to [search_fts]. [search_hybrid] applies this function to its
+    text. *)
+
 val search_vector :
   ?exact:bool -> ?nprobe:float -> t -> query:float array -> limit:int ->
   ((string * float) list, string) result

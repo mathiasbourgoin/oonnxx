@@ -51,7 +51,7 @@ The package installs `vec1.so` with the library and loads it for each attached S
 
 For an existing `Caqti_blocking.CONNECTION` using the SQLite3 driver, use `Oonnxx_caqti.attach ~model_id conn` instead and add `oonnxx.caqti` to the Dune dependencies. The Caqti facade exposes the same indexing, rebuild, and search functions. It uses the driver's underlying SQLite connection, so keep the blocking connection on the thread that created it.
 
-`search_vector` searches Vec1 by cosine distance; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. The returned scores from these methods have different meanings and should not be compared across methods. Oonnxx's tables are independent of other application tables.
+`search_vector` searches Vec1 by cosine distance; `search_fts` accepts SQLite FTS5 query syntax; `search_hybrid` treats its text as literal search terms and combines keyword and vector rankings with reciprocal rank fusion. To give user input to `search_fts`, convert it with `literal_fts_query`, which quotes each word so FTS5 operators such as `AND`, `NOT`, and `*` are searched as text; it returns an empty string when the input has no searchable word, and an empty string must not be passed to `search_fts`. The returned scores from these methods have different meanings and should not be compared across methods. Oonnxx's tables are independent of other application tables.
 
 ## Build and use the approximate index
 

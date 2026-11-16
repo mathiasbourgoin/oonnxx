@@ -81,6 +81,55 @@ let exact_search_full_depth_is_not_quadratic () =
         "exact search at limit %d took %.1f s; expected well under 2 s" count
         elapsed))
 
+let literal_fts_query_contract () =
+  List.iter (fun (text, expected) ->
+    let actual = Oonnxx_sqlite3.literal_fts_query text in
+    if actual <> expected then
+      failwith (Printf.sprintf "literal_fts_query %S = %S, expected %S" text
+        actual expected);
+    check (Oonnxx_caqti.literal_fts_query text = expected)
+      "Caqti literal_fts_query matches")
+    [ "", "";
+      " \t\n ", "";
+      "? * - ( ) \"", "";
+      "chat noir", "\"chat\" OR \"noir\"";
+      "chat\tnoir\nnuit", "\"chat\" OR \"noir\" OR \"nuit\"";
+      "say \"hi\"", "\"say\" OR \"\"\"hi\"\"\"";
+      "a AND b", "\"a\" OR \"AND\" OR \"b\"";
+      "NOT NEAR OR", "\"NOT\" OR \"NEAR\" OR \"OR\"";
+      "foo* ^bar col:baz", "\"foo*\" OR \"^bar\" OR \"col:baz\"";
+      "café 日本語", "\"café\" OR \"日本語\"" ]
+
+(* Every query built by [literal_fts_query] must be accepted by FTS5 and
+   match terms literally: operators and prefix markers lose their meaning. *)
+let literal_fts_query_is_literal () =
+  with_index (fun index ->
+    Oonnxx_sqlite3.upsert_many index
+      [ "not", "this is not a drill", [| 1.; 0. |];
+        "foobar", "foobar baz", [| 0.; 1. |];
+        "cafe", "un café au lait", [| 1.; 1. |];
+        "japanese", "日本語 テキスト", [| 1.; 2. |] ] |> ok;
+    let search text =
+      let query = Oonnxx_sqlite3.literal_fts_query text in
+      if query = "" then []
+      else
+        match Oonnxx_sqlite3.search_fts index ~query ~limit:10 with
+        | Ok ids -> List.sort compare ids
+        | Error error ->
+            failwith (Printf.sprintf "FTS5 rejected literal query for %S: %s"
+              text error) in
+    check (search "NOT" = [ "not" ]) "NOT is a search term";
+    check (search "foo*" = []) "prefix marker is literal";
+    check (search "foobar AND" = [ "foobar" ]) "AND is a search term";
+    check (search "cafe" = [ "cafe" ]) "unicode61 folds diacritics";
+    check (search "日本語" = [ "japanese" ]) "non-ASCII term";
+    List.iter (fun text -> ignore (search text))
+      [ "\"unbalanced"; "a\"\"b"; "(group"; "x)"; "NEAR(a b, 2)"; "-neg";
+        "+plus"; "{col}: x"; "a OR"; "AND"; "—"; "\xff\xfe"; "drill\r";
+        "x:y:z"; "'single'" ])
+
 let () =
+  literal_fts_query_contract ();
+  literal_fts_query_is_literal ();
   exact_search_matches_full_sort ();
   exact_search_full_depth_is_not_quadratic ()
